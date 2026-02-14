@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { 
   LayoutDashboard, 
   Factory, 
@@ -11,7 +12,9 @@ import {
   Printer, 
   Download,
   CheckCircle2,
-  Info
+  Info,
+  X,
+  Check
 } from 'lucide-react';
 import { 
   LineChart, 
@@ -27,6 +30,69 @@ import {
   Legend
 } from 'recharts';
 import { User, Role, Item, ShiftData, ArchivedShift, AppSettings, TabId } from './types';
+
+/**
+ * Custom hook to handle professional printing via a hidden iframe.
+ * This replaces the react-to-print library to avoid ESM import issues.
+ */
+const useReactToPrint = ({ contentRef, documentTitle }: { contentRef: React.RefObject<HTMLDivElement | null>, documentTitle?: string }) => {
+  return useCallback(() => {
+    const content = contentRef.current;
+    if (!content) return;
+
+    // Create a hidden iframe
+    const printFrame = document.createElement('iframe');
+    printFrame.style.position = 'fixed';
+    printFrame.style.right = '0';
+    printFrame.style.bottom = '0';
+    printFrame.style.width = '0';
+    printFrame.style.height = '0';
+    printFrame.style.border = '0';
+    document.body.appendChild(printFrame);
+
+    const frameDoc = printFrame.contentWindow?.document;
+    if (!frameDoc) return;
+
+    // Build the document for printing
+    const styleLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map(l => l.outerHTML).join('');
+    const inlineStyles = Array.from(document.querySelectorAll('style')).map(s => s.outerHTML).join('');
+
+    frameDoc.open();
+    frameDoc.write(`
+      <html lang="ar" dir="rtl">
+        <head>
+          <title>${documentTitle || 'Print'}</title>
+          ${styleLinks}
+          ${inlineStyles}
+          <script src="https://cdn.tailwindcss.com"></script>
+          <style>
+            @media print {
+              .print-only { display: block !important; }
+              body { padding: 0; margin: 0; background: white; }
+            }
+            body { font-family: 'Tajawal', sans-serif; }
+          </style>
+        </head>
+        <body>
+          <div class="print-only">
+            ${content.innerHTML}
+          </div>
+        </body>
+      </html>
+    `);
+    frameDoc.close();
+
+    // Trigger print once content is loaded
+    printFrame.contentWindow?.focus();
+    setTimeout(() => {
+      printFrame.contentWindow?.print();
+      // Remove the frame after a short delay
+      setTimeout(() => {
+        document.body.removeChild(printFrame);
+      }, 1000);
+    }, 500);
+  }, [contentRef, documentTitle]);
+};
 
 // Components
 const SidebarItem: React.FC<{ 
@@ -137,7 +203,6 @@ const App: React.FC = () => {
 
   const archiveShift = () => {
     let total = 0;
-    // Fix: Explicitly cast Object.values results to number[][] to resolve 'unknown' type inference on row.reduce
     (Object.values(liveShift) as number[][]).forEach(row => {
       total += row.reduce((a, b) => a + b, 0);
     });
@@ -314,7 +379,6 @@ const App: React.FC = () => {
 
 // Sub-components
 const Dashboard: React.FC<{ items: Item[], archive: ArchivedShift[], settings: AppSettings, liveShift: ShiftData }> = ({ items, archive, settings, liveShift }) => {
-  // Fix: Explicitly cast Object.values results to number[][] to ensure type safety during reduction
   const todayProd = (Object.values(liveShift) as number[][]).reduce((acc, row) => acc + row.reduce((a, b) => a + b, 0), 0);
   
   const last7Days = archive.slice(0, 7).reverse().map(s => ({
@@ -444,7 +508,6 @@ const Production: React.FC<{
           </thead>
           <tbody className="divide-y divide-slate-100">
             {filteredItems.map(item => {
-              // Fix: Explicitly cast row as number[] to avoid 'unknown' type errors during reduce() call (Fixes Error on line 316/317)
               const row = (liveShift[item.id] || [0, 0, 0, 0, 0, 0, 0]) as number[];
               const total = row.reduce((a, b) => a + b, 0);
               return (
@@ -584,15 +647,127 @@ const Items: React.FC<{ items: Item[], settings: AppSettings, addItem: (n: strin
   );
 };
 
-const Archive: React.FC<{ archive: ArchivedShift[], items: Item[], settings: AppSettings }> = ({ archive, items, settings }) => {
-  const [printShift, setPrintShift] = useState<ArchivedShift | null>(null);
+// Refactored Print Component
+const PrintReport = React.forwardRef<{ items: Item[], settings: AppSettings, shift: ArchivedShift, selectedBrands: string[] }, any>((props, ref: any) => {
+  const { items, settings, shift, selectedBrands } = props;
 
-  const handlePrint = (shift: ArchivedShift) => {
-    setPrintShift(shift);
-    setTimeout(() => {
-      window.print();
-      setPrintShift(null);
-    }, 500);
+  return (
+    <div ref={ref} className="print-only bg-white p-8">
+      {selectedBrands.map(brd => {
+        const brdItems = items.filter(i => i.brd === brd);
+        const brdData = brdItems.map(itm => ({
+          ...itm,
+          vals: (shift.data[itm.id] || [0,0,0,0,0,0,0]) as number[]
+        })).filter(i => i.vals.reduce((a,b)=>a+b,0) > 0);
+
+        if (brdData.length === 0) return null;
+
+        const brdTotal = brdData.reduce((acc, i) => acc + i.vals.reduce((a,b)=>a+b,0), 0);
+
+        return (
+          <div key={brd} className="mb-12 page-break-after" style={{ pageBreakAfter: 'always' }}>
+            <div className="flex justify-between items-end border-b-4 border-slate-900 pb-4 mb-8">
+              <div>
+                <h1 className="text-3xl font-black text-slate-900 leading-tight">{settings.comp}</h1>
+                <h2 className="text-xl font-bold text-slate-600">بيان إنتاج براند: {brd}</h2>
+              </div>
+              <div className="text-left font-bold text-slate-600 text-sm">
+                <p>تاريخ الشيفت: {shift.date}</p>
+                <p>مسؤول الأرشفة: {shift.user}</p>
+              </div>
+            </div>
+
+            <table className="w-full border-collapse border-2 border-slate-900 text-center text-xs">
+              <thead>
+                <tr className="bg-slate-100">
+                  <th className="border-2 border-slate-900 p-3 w-1/4 text-sm font-black">الصنف</th>
+                  <th className="border-2 border-slate-900 p-2">س1</th>
+                  <th className="border-2 border-slate-900 p-2">س2</th>
+                  <th className="border-2 border-slate-900 p-2">س3</th>
+                  <th className="border-2 border-slate-900 p-2">س4</th>
+                  <th className="border-2 border-slate-900 p-2">س5</th>
+                  <th className="border-2 border-slate-900 p-2">س6</th>
+                  <th className="border-2 border-slate-900 p-2">Ex</th>
+                  <th className="border-2 border-slate-900 p-2 text-sm font-black">الإجمالي</th>
+                  <th className="border-2 border-slate-900 p-2 text-sm font-black">العبوات</th>
+                </tr>
+              </thead>
+              <tbody>
+                {brdData.map(i => {
+                  const sum = i.vals.reduce((a,b)=>a+b,0);
+                  return (
+                    <tr key={i.id}>
+                      <td className="border-2 border-slate-900 p-3 text-right font-bold text-sm">{i.name} ({i.w}كجم)</td>
+                      {i.vals.map((v, idx) => <td key={idx} className="border-2 border-slate-900 p-2">{v || '-'}</td>)}
+                      <td className="border-2 border-slate-900 p-2 font-black text-sm">{sum.toLocaleString()}</td>
+                      <td className="border-2 border-slate-900 p-2 font-bold text-sm">{(sum/i.w).toFixed(1)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot>
+                <tr className="bg-slate-100 font-black text-base">
+                  <td colSpan={8} className="border-2 border-slate-900 p-3 text-right">إجمالي إنتاج البراند (كجم)</td>
+                  <td className="border-2 border-slate-900 p-3 text-indigo-700">{brdTotal.toLocaleString()}</td>
+                  <td className="border-2 border-slate-900 p-3">-</td>
+                </tr>
+              </tfoot>
+            </table>
+
+            <div className="mt-16 grid grid-cols-3 gap-8 text-center font-bold text-sm">
+              {settings.sigs.split('\n').map(sig => (
+                <div key={sig}>
+                  <p className="mb-10">{sig}</p>
+                  <div className="border-t-2 border-slate-400 border-dashed w-3/4 mx-auto"></div>
+                </div>
+              ))}
+            </div>
+            
+            <div className="mt-12 pt-4 border-t border-slate-100 flex justify-between items-center text-[10px] text-slate-400 font-bold uppercase tracking-widest">
+              <span>Mini Bo Pro Management System</span>
+              <span>تاريخ الطباعة: {new Date().toLocaleString('ar-EG')}</span>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+const Archive: React.FC<{ archive: ArchivedShift[], items: Item[], settings: AppSettings }> = ({ archive, items, settings }) => {
+  const [isModalOpen, setIsModalOpen] = useState(false);
+  const [selectedShift, setSelectedShift] = useState<ArchivedShift | null>(null);
+  const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
+  const printRef = useRef<HTMLDivElement>(null);
+
+  const handleOpenPrintModal = (shift: ArchivedShift) => {
+    setSelectedShift(shift);
+    // Auto-select brands that have production in this shift
+    const brandsWithData = settings.brds.filter(brd => {
+      const brdItems = items.filter(i => i.brd === brd);
+      return brdItems.some(itm => {
+        const row = (shift.data[itm.id] || []) as number[];
+        return row.reduce((a, b) => a + b, 0) > 0;
+      });
+    });
+    setSelectedBrands(brandsWithData);
+    setIsModalOpen(true);
+  };
+
+  const handlePrint = useReactToPrint({
+    contentRef: printRef,
+    documentTitle: `تقرير_إنتاج_${selectedShift?.date || 'شيفت'}`,
+  });
+
+  const onPrintClick = () => {
+    handlePrint();
+    setIsModalOpen(false);
+  };
+
+  const toggleBrand = (brd: string) => {
+    setSelectedBrands(prev => 
+      prev.includes(brd) ? prev.filter(b => b !== brd) : [...prev, brd]
+    );
   };
 
   return (
@@ -618,7 +793,7 @@ const Archive: React.FC<{ archive: ArchivedShift[], items: Item[], settings: App
                   <td className="p-6 font-bold text-slate-800">{s.date}</td>
                   <td className="p-6">
                     <div className="flex items-center gap-2">
-                      <div className="w-6 h-6 rounded-full bg-slate-200 flex items-center justify-center text-[10px] font-bold">{s.user[0]}</div>
+                      <div className="w-6 h-6 rounded-full bg-indigo-100 text-indigo-600 flex items-center justify-center text-[10px] font-black">{s.user[0].toUpperCase()}</div>
                       <span className="text-sm font-medium">{s.user}</span>
                     </div>
                   </td>
@@ -626,11 +801,11 @@ const Archive: React.FC<{ archive: ArchivedShift[], items: Item[], settings: App
                   <td className="p-6 text-sm text-slate-500">{s.count} صنف</td>
                   <td className="p-6 text-center">
                     <button 
-                      onClick={() => handlePrint(s)}
+                      onClick={() => handleOpenPrintModal(s)}
                       className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-600 hover:text-white transition-all font-bold text-xs"
                     >
                       <Printer size={14} />
-                      طباعة التقرير
+                      تجهيز الطباعة
                     </button>
                   </td>
                 </tr>
@@ -645,89 +820,82 @@ const Archive: React.FC<{ archive: ArchivedShift[], items: Item[], settings: App
         </div>
       </div>
 
-      {/* Print View */}
-      {printShift && (
-        <div className="print-only fixed inset-0 bg-white z-[9999] p-8 overflow-y-auto">
-          {settings.brds.map(brd => {
-            const brdItems = items.filter(i => i.brd === brd);
-            // Fix: Cast the results of data access to number[] to resolve 'unknown' type errors during reduce() calls
-            const brdData = brdItems.map(itm => ({
-              ...itm,
-              vals: (printShift.data[itm.id] || [0,0,0,0,0,0,0]) as number[]
-            })).filter(i => i.vals.reduce((a,b)=>a+b,0) > 0);
-
-            if (brdData.length === 0) return null;
-
-            // Fix: Ensure brdTotal calculation uses number[] correctly
-            const brdTotal = brdData.reduce((acc, i) => acc + i.vals.reduce((a,b)=>a+b,0), 0);
-
-            return (
-              <div key={brd} className="mb-12 page-break-after">
-                <div className="flex justify-between items-end border-b-4 border-slate-900 pb-4 mb-8">
-                  <div>
-                    <h1 className="text-3xl font-black text-slate-900">{settings.comp}</h1>
-                    <h2 className="text-xl font-bold text-slate-600">بيان إنتاج براند: {brd}</h2>
-                  </div>
-                  <div className="text-left font-bold text-slate-600">
-                    <p>التاريخ: {printShift.date}</p>
-                    <p>المسؤول: {printShift.user}</p>
-                  </div>
-                </div>
-
-                <table className="w-full border-collapse border-2 border-slate-900 text-center text-sm">
-                  <thead>
-                    <tr className="bg-slate-100">
-                      <th className="border-2 border-slate-900 p-3 w-1/4">الصنف</th>
-                      <th className="border-2 border-slate-900 p-2">س1</th>
-                      <th className="border-2 border-slate-900 p-2">س2</th>
-                      <th className="border-2 border-slate-900 p-2">س3</th>
-                      <th className="border-2 border-slate-900 p-2">س4</th>
-                      <th className="border-2 border-slate-900 p-2">س5</th>
-                      <th className="border-2 border-slate-900 p-2">س6</th>
-                      <th className="border-2 border-slate-900 p-2">Ex</th>
-                      <th className="border-2 border-slate-900 p-2">الإجمالي</th>
-                      <th className="border-2 border-slate-900 p-2">العبوات</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {brdData.map(i => {
-                      const sum = i.vals.reduce((a,b)=>a+b,0);
-                      return (
-                        <tr key={i.id}>
-                          <td className="border-2 border-slate-900 p-3 text-right font-bold">{i.name} ({i.w}كجم)</td>
-                          {i.vals.map((v, idx) => <td key={idx} className="border-2 border-slate-900 p-2">{v || '-'}</td>)}
-                          <td className="border-2 border-slate-900 p-2 font-black">{sum}</td>
-                          <td className="border-2 border-slate-900 p-2 font-bold">{(sum/i.w).toFixed(1)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot>
-                    <tr className="bg-slate-100 font-black text-lg">
-                      <td colSpan={8} className="border-2 border-slate-900 p-3 text-right">إجمالي إنتاج البراند</td>
-                      <td className="border-2 border-slate-900 p-3">{brdTotal}</td>
-                      <td className="border-2 border-slate-900 p-3">-</td>
-                    </tr>
-                  </tfoot>
-                </table>
-
-                <div className="mt-16 grid grid-cols-3 gap-8 text-center font-bold">
-                  {settings.sigs.split('\n').map(sig => (
-                    <div key={sig}>
-                      <p>{sig}</p>
-                      <div className="mt-12 border-t-2 border-slate-400 border-dashed"></div>
-                    </div>
-                  ))}
-                </div>
-                
-                <p className="mt-12 text-center text-xs text-slate-400 font-bold">
-                  طبع بواسطة نظام Mini Bo Pro | مخرجات مؤرشفة بتاريخ {new Date().toLocaleString('ar-EG')}
-                </p>
+      {/* Brand Selection Modal */}
+      {isModalOpen && selectedShift && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 no-print">
+          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}></div>
+          <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl relative overflow-hidden animate-bounce-in">
+            <div className="p-6 border-b border-slate-100 flex justify-between items-center">
+              <div>
+                <h3 className="text-xl font-extrabold text-slate-800">تخصيص الطباعة</h3>
+                <p className="text-xs font-bold text-slate-400">تاريخ الشيفت: {selectedShift.date}</p>
               </div>
-            );
-          })}
+              <button onClick={() => setIsModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition-all">
+                <X size={20} />
+              </button>
+            </div>
+            <div className="p-8">
+              <p className="text-sm font-bold text-slate-500 mb-4">اختر البراندات التي تريد تضمينها في التقرير:</p>
+              <div className="grid grid-cols-1 gap-3 max-h-60 overflow-y-auto custom-scrollbar pr-2">
+                {settings.brds.map(brd => {
+                  const hasData = items.filter(i => i.brd === brd).some(itm => {
+                    const row = (selectedShift.data[itm.id] || []) as number[];
+                    return row.reduce((a, b) => a + b, 0) > 0;
+                  });
+                  
+                  return (
+                    <button 
+                      key={brd} 
+                      disabled={!hasData}
+                      onClick={() => toggleBrand(brd)}
+                      className={`flex items-center justify-between p-4 rounded-2xl border-2 transition-all ${
+                        selectedBrands.includes(brd) 
+                          ? 'border-indigo-600 bg-indigo-50 text-indigo-700' 
+                          : hasData ? 'border-slate-100 bg-white text-slate-600 hover:border-slate-200' : 'border-slate-50 bg-slate-50 text-slate-300 cursor-not-allowed opacity-50'
+                      }`}
+                    >
+                      <div className="flex flex-col items-start">
+                        <span className="font-bold">{brd}</span>
+                        {!hasData && <span className="text-[10px] font-black uppercase text-rose-400">لا يوجد إنتاج مسجل</span>}
+                      </div>
+                      {selectedBrands.includes(brd) && <Check size={20} className="text-indigo-600" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <div className="p-6 bg-slate-50 flex gap-4">
+              <button 
+                onClick={() => setIsModalOpen(false)}
+                className="flex-1 px-6 py-4 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:bg-slate-100 transition-all font-bold"
+              >
+                إلغاء
+              </button>
+              <button 
+                onClick={onPrintClick}
+                disabled={selectedBrands.length === 0}
+                className="flex-[2] px-6 py-4 bg-indigo-600 text-white rounded-2xl hover:bg-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all font-bold shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+              >
+                <Printer size={20} />
+                بدء الطباعة ({selectedBrands.length})
+              </button>
+            </div>
+          </div>
         </div>
       )}
+
+      {/* Actual Hidden Print Component */}
+      <div className="hidden">
+        {selectedShift && (
+          <PrintReport 
+            ref={printRef} 
+            items={items} 
+            settings={settings} 
+            shift={selectedShift} 
+            selectedBrands={selectedBrands} 
+          />
+        )}
+      </div>
     </>
   );
 };
