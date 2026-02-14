@@ -32,8 +32,8 @@ import {
 import { User, Role, Item, ShiftData, ArchivedShift, AppSettings, TabId } from './types';
 
 /**
- * Custom hook to handle professional printing via a hidden iframe.
- * This replaces the react-to-print library to avoid ESM import issues.
+ * Improved custom hook to handle professional printing via a hidden iframe.
+ * Fixes the blank page issue by using outerHTML and forcing visibility styles.
  */
 const useReactToPrint = ({ contentRef, documentTitle }: { contentRef: React.RefObject<HTMLDivElement | null>, documentTitle?: string }) => {
   return useCallback(() => {
@@ -48,12 +48,13 @@ const useReactToPrint = ({ contentRef, documentTitle }: { contentRef: React.RefO
     printFrame.style.width = '0';
     printFrame.style.height = '0';
     printFrame.style.border = '0';
+    printFrame.style.visibility = 'hidden';
     document.body.appendChild(printFrame);
 
     const frameDoc = printFrame.contentWindow?.document;
     if (!frameDoc) return;
 
-    // Build the document for printing
+    // Get all current styles from the main document
     const styleLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map(l => l.outerHTML).join('');
     const inlineStyles = Array.from(document.querySelectorAll('style')).map(s => s.outerHTML).join('');
 
@@ -66,31 +67,64 @@ const useReactToPrint = ({ contentRef, documentTitle }: { contentRef: React.RefO
           ${inlineStyles}
           <script src="https://cdn.tailwindcss.com"></script>
           <style>
-            @media print {
-              .print-only { display: block !important; }
-              body { padding: 0; margin: 0; background: white; }
+            /* Force visibility of the content being printed */
+            .print-only { display: block !important; visibility: visible !important; }
+            .no-print { display: none !important; }
+            
+            body { 
+              padding: 0; 
+              margin: 0; 
+              background: white !important; 
+              width: 100%;
             }
+            
+            @media print {
+              @page {
+                size: A4;
+                margin: 1cm;
+              }
+              body { -webkit-print-color-adjust: exact; }
+            }
+            
+            /* Ensure the font is loaded */
             body { font-family: 'Tajawal', sans-serif; }
           </style>
         </head>
-        <body>
-          <div class="print-only">
-            ${content.innerHTML}
+        <body class="bg-white">
+          <div class="p-4">
+            ${content.outerHTML}
           </div>
         </body>
       </html>
     `);
     frameDoc.close();
 
-    // Trigger print once content is loaded
-    printFrame.contentWindow?.focus();
-    setTimeout(() => {
-      printFrame.contentWindow?.print();
-      // Remove the frame after a short delay
+    // Give some time for Tailwind CDN to process classes and images to load
+    printFrame.onload = () => {
       setTimeout(() => {
-        document.body.removeChild(printFrame);
+        printFrame.contentWindow?.focus();
+        printFrame.contentWindow?.print();
+        
+        // Remove the frame after a delay to allow the print dialog to handle it
+        setTimeout(() => {
+          document.body.removeChild(printFrame);
+        }, 1500);
       }, 1000);
-    }, 500);
+    };
+
+    // Fallback for browsers where onload might not trigger on iframe write
+    setTimeout(() => {
+      if (document.body.contains(printFrame)) {
+        printFrame.contentWindow?.focus();
+        printFrame.contentWindow?.print();
+        setTimeout(() => {
+          if (document.body.contains(printFrame)) {
+            document.body.removeChild(printFrame);
+          }
+        }, 1500);
+      }
+    }, 2000);
+
   }, [contentRef, documentTitle]);
 };
 
