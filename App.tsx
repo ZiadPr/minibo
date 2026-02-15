@@ -1,182 +1,147 @@
 
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  LayoutDashboard, 
-  Factory, 
-  Box, 
-  History, 
-  Settings, 
-  LogOut, 
-  Plus, 
-  Trash2, 
-  Printer, 
-  Download,
-  CheckCircle2,
-  Info,
-  X,
-  Check,
-  FileText,
-  ShieldCheck
-} from 'lucide-react';
+  LayoutDashboard, Factory, Box, History, Settings, LogOut, Plus, Trash2, Printer, 
+  Download, Info, Check, User as UserIcon, Lock, Search, ShieldCheck, 
+  Database, FileSpreadsheet, Calendar, UserCheck, Zap, Clock, ShieldAlert,
+  UploadCloud, ChevronRight, Activity, TrendingUp, Layers, HardDrive
+} from 'https://esm.sh/lucide-react@0.460.0';
 import { 
-  LineChart, 
-  Line, 
-  XAxis, 
-  YAxis, 
-  CartesianGrid, 
-  Tooltip, 
-  ResponsiveContainer, 
-  PieChart, 
-  Pie, 
-  Cell,
-  Legend
-} from 'recharts';
-import { User, Role, Item, ShiftData, ArchivedShift, AppSettings, TabId, Specification } from './types';
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
+  PieChart, Pie, Cell, Legend, AreaChart, Area
+} from 'https://esm.sh/recharts@2.12.7?deps=react@18.3.1';
+import * as XLSX from 'https://esm.sh/xlsx@0.18.5';
+import { User, Role, Item, ShiftData, ArchivedShift, AppSettings, TabId, ItemProduction, ShiftType } from './types';
 
-/**
- * Professional printing hook with improved style injection and reliability.
- */
-const useReactToPrint = ({ contentRef, documentTitle }: { contentRef: React.RefObject<HTMLDivElement | null>, documentTitle?: string }) => {
-  return useCallback(() => {
-    const content = contentRef.current;
-    if (!content) return;
+// --- IndexedDB Manager ---
+const DB_NAME = 'MiniBoPro_ProductionDB_v2';
+const DB_VERSION = 1;
 
-    const printFrame = document.createElement('iframe');
-    printFrame.style.position = 'fixed';
-    printFrame.style.right = '0';
-    printFrame.style.bottom = '0';
-    printFrame.style.width = '0';
-    printFrame.style.height = '0';
-    printFrame.style.border = '0';
-    printFrame.style.visibility = 'hidden';
-    document.body.appendChild(printFrame);
-
-    const frameDoc = printFrame.contentWindow?.document;
-    if (!frameDoc) return;
-
-    const styleLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"]')).map(l => l.outerHTML).join('');
-    const inlineStyles = Array.from(document.querySelectorAll('style')).map(s => s.outerHTML).join('');
-
-    frameDoc.open();
-    frameDoc.write(`
-      <html lang="ar" dir="rtl">
-        <head>
-          <title>${documentTitle || 'تقرير إنتاج'}</title>
-          ${styleLinks}
-          ${inlineStyles}
-          <script src="https://cdn.tailwindcss.com"></script>
-          <style>
-            @import url('https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;900&display=swap');
-            
-            .print-only { display: block !important; visibility: visible !important; }
-            .no-print { display: none !important; }
-            
-            body { 
-              padding: 0; 
-              margin: 0; 
-              background: white !important; 
-              font-family: 'Tajawal', sans-serif;
-            }
-            
-            @media print {
-              @page {
-                size: A4;
-                margin: 0.5cm;
-              }
-              body { -webkit-print-color-adjust: exact; }
-            }
-            
-            .report-table { width: 100%; border-collapse: collapse; }
-            .report-table th { background-color: #f8fafc !important; border: 2px solid #000; padding: 10px; font-weight: 900; font-size: 14px; }
-            .report-table td { border: 2px solid #000; padding: 8px; font-weight: 700; font-size: 13px; }
-            .report-header { border-bottom: 4px double #000; margin-bottom: 20px; padding-bottom: 15px; }
-          </style>
-        </head>
-        <body class="bg-white">
-          <div class="p-4">
-            ${content.innerHTML}
-          </div>
-        </body>
-      </html>
-    `);
-    frameDoc.close();
-
-    printFrame.onload = () => {
-      setTimeout(() => {
-        printFrame.contentWindow?.focus();
-        printFrame.contentWindow?.print();
-        setTimeout(() => document.body.removeChild(printFrame), 1500);
-      }, 1000);
+const openDB = (): Promise<IDBDatabase> => {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains('app_data')) db.createObjectStore('app_data');
     };
-
-    setTimeout(() => {
-      if (document.body.contains(printFrame)) {
-        printFrame.contentWindow?.focus();
-        printFrame.contentWindow?.print();
-        setTimeout(() => { if (document.body.contains(printFrame)) document.body.removeChild(printFrame); }, 1500);
-      }
-    }, 2500);
-  }, [contentRef, documentTitle]);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
 };
 
-const SidebarItem: React.FC<{ 
-  id: TabId; 
-  active: boolean; 
-  icon: React.ReactNode; 
-  label: string; 
-  onClick: (id: TabId) => void 
-}> = ({ id, active, icon, label, onClick }) => (
-  <button
-    onClick={() => onClick(id)}
-    className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 ${
-      active ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-200' : 'text-slate-400 hover:bg-slate-800 hover:text-white'
-    }`}
-  >
-    {icon}
-    <span className="font-medium">{label}</span>
-  </button>
-);
+const saveToDB = async (key: string, value: any) => {
+  try {
+    const db = await openDB();
+    const tx = db.transaction('app_data', 'readwrite');
+    tx.objectStore('app_data').put(value, key);
+    return new Promise((resolve) => { tx.oncomplete = () => resolve(true); });
+  } catch (err) {
+    console.error("DB Save Error:", err);
+  }
+};
 
+const getFromDB = async (key: string): Promise<any> => {
+  try {
+    const db = await openDB();
+    const tx = db.transaction('app_data', 'readonly');
+    const request = tx.objectStore('app_data').get(key);
+    return new Promise((resolve) => { request.onsuccess = () => resolve(request.result); });
+  } catch (err) {
+    console.error("DB Get Error:", err);
+    return null;
+  }
+};
+
+// --- Logo Component ---
+const AppLogo = ({ size = "md" }: { size?: "sm" | "md" | "lg" }) => {
+  const dims = size === "sm" ? "w-8 h-8" : size === "lg" ? "w-28 h-28" : "w-12 h-12";
+  const iconSize = size === "sm" ? 16 : size === "lg" ? 56 : 24;
+  return (
+    <div className={`${dims} bg-gradient-to-br from-indigo-600 via-indigo-700 to-slate-900 rounded-3xl flex items-center justify-center shadow-2xl shadow-indigo-200 ring-8 ring-indigo-50/50`}>
+      <Factory className="text-white" size={iconSize} />
+    </div>
+  );
+};
+
+// --- Splash Screen ---
+const SplashScreen = ({ onFinish }: { onFinish: () => void }) => {
+  const [progress, setProgress] = useState(0);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setProgress(p => {
+        if (p >= 100) {
+          clearInterval(timer);
+          setTimeout(onFinish, 800);
+          return 100;
+        }
+        return p + 1.5;
+      });
+    }, 20);
+    return () => clearInterval(timer);
+  }, [onFinish]);
+
+  return (
+    <div className="fixed inset-0 z-[10000] bg-slate-950 flex flex-col items-center justify-center">
+      <div className="animate-pulse mb-10">
+        <AppLogo size="lg" />
+      </div>
+      <h1 className="text-5xl font-black text-white mb-3 tracking-tighter">MINI BO <span className="text-indigo-500">PRO</span></h1>
+      <p className="text-slate-500 font-bold mb-12 text-xs uppercase tracking-[0.3em]">Industrial Management Core</p>
+      <div className="w-72 h-1 bg-slate-900 rounded-full overflow-hidden">
+        <div className="h-full bg-indigo-500 shadow-[0_0_15px_#6366f1] transition-all duration-75 ease-out" style={{ width: `${progress}%` }} />
+      </div>
+    </div>
+  );
+};
+
+// --- Main App ---
 const App: React.FC = () => {
+  const [isSplash, setIsSplash] = useState(true);
   const [user, setUser] = useState<User | null>(null);
   const [activeTab, setActiveTab] = useState<TabId>('dash');
   const [items, setItems] = useState<Item[]>([]);
   const [archive, setArchive] = useState<ArchivedShift[]>([]);
   const [settings, setSettings] = useState<AppSettings>({
-    comp: "مؤسسة الإنتاج المتكاملة",
-    brds: ["البراند الرئيسي"],
-    sigs: "المستلم\nمدير الجودة\nمدير الموقع",
-    specs: []
+    comp: "شركة المستقبل للصناعات الغذائية", 
+    brds: ["الأصيل", "التاج"], 
+    sigs: "مدير المصنع\nالمشرف العام\nأمين المخزن", 
+    users: [{ id: '1', name: 'المدير العام', username: 'admin', password: '123', role: 'admin' }]
   });
   const [liveShift, setLiveShift] = useState<ShiftData>({});
   const [selectedBrd, setSelectedBrd] = useState<string>('');
   const [loginForm, setLoginForm] = useState({ user: '', pass: '' });
   const [toasts, setToasts] = useState<{id: number, msg: string, type: 'success' | 'danger'}[]>([]);
+  const [searchRef, setSearchRef] = useState('');
+  const [shiftInfo, setShiftInfo] = useState({ supervisorId: '', type: 'morning' as ShiftType });
 
   useEffect(() => {
-    const storedItems = localStorage.getItem('mbo_items');
-    const storedArchive = localStorage.getItem('mbo_archive');
-    const storedSets = localStorage.getItem('mbo_sets');
-    const storedLive = localStorage.getItem('mbo_live');
+    const loadAllData = async () => {
+      const storedItems = await getFromDB('items');
+      const storedArchive = await getFromDB('archive');
+      const storedSettings = await getFromDB('settings');
+      const storedLive = await getFromDB('live');
+      const storedUser = await getFromDB('session_user');
 
-    if (storedItems) setItems(JSON.parse(storedItems));
-    if (storedArchive) setArchive(JSON.parse(storedArchive));
-    if (storedSets) {
-      const parsedSets = JSON.parse(storedSets);
-      setSettings(parsedSets);
-      setSelectedBrd(parsedSets.brds[0]);
-    } else {
-      setSelectedBrd(settings.brds[0]);
-    }
-    if (storedLive) setLiveShift(JSON.parse(storedLive));
+      if (storedItems) setItems(storedItems);
+      if (storedArchive) setArchive(storedArchive);
+      if (storedSettings) {
+        setSettings(storedSettings);
+        setSelectedBrd(storedSettings.brds[0] || '');
+      } else {
+        setSelectedBrd(settings.brds[0]);
+      }
+      if (storedLive) setLiveShift(storedLive);
+      if (storedUser) setUser(storedUser);
+    };
+    loadAllData();
   }, []);
 
-  useEffect(() => {
-    localStorage.setItem('mbo_items', JSON.stringify(items));
-    localStorage.setItem('mbo_archive', JSON.stringify(archive));
-    localStorage.setItem('mbo_sets', JSON.stringify(settings));
-    localStorage.setItem('mbo_live', JSON.stringify(liveShift));
-  }, [items, archive, settings, liveShift]);
+  useEffect(() => { if (!isSplash) saveToDB('items', items); }, [items, isSplash]);
+  useEffect(() => { if (!isSplash) saveToDB('archive', archive); }, [archive, isSplash]);
+  useEffect(() => { if (!isSplash) saveToDB('settings', settings); }, [settings, isSplash]);
+  useEffect(() => { if (!isSplash) saveToDB('live', liveShift); }, [liveShift, isSplash]);
+  useEffect(() => { if (!isSplash) saveToDB('session_user', user); }, [user, isSplash]);
 
   const addToast = (msg: string, type: 'success' | 'danger') => {
     const id = Date.now();
@@ -186,94 +151,194 @@ const App: React.FC = () => {
 
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
-    const users: Record<string, string> = { 'admin': '123', 'super': '123', 'view': '123' };
-    if (users[loginForm.user] && users[loginForm.user] === loginForm.pass) {
-      setUser({ 
-        name: loginForm.user, 
-        role: loginForm.user === 'admin' ? 'admin' : (loginForm.user === 'super' ? 'super' : 'view') 
-      });
-      addToast("تم تسجيل الدخول بنجاح", "success");
+    const foundUser = settings.users.find(u => u.username === loginForm.user && u.password === loginForm.pass);
+    if (foundUser) {
+      setUser(foundUser);
+      addToast(`مرحباً بك ${foundUser.name}`, "success");
     } else {
       addToast("بيانات الدخول غير صحيحة", "danger");
     }
   };
 
-  const addItem = (name: string, brd: string, w: number, specId?: number) => {
-    if (!name || !w) return addToast("يرجى إكمال البيانات", "danger");
-    const newItem: Item = { id: Date.now(), name, brd, w, specId };
-    setItems(prev => [...prev, newItem]);
-    addToast("تم إضافة الصنف", "success");
-  };
-
-  const removeItem = (id: number) => {
-    if (!confirm("هل أنت متأكد من حذف هذا الصنف؟")) return;
-    setItems(prev => prev.filter(i => i.id !== id));
-  };
-
-  const updateLive = (itemId: number, hourIndex: number, val: string) => {
-    const num = parseFloat(val) || 0;
-    setLiveShift(prev => {
-      const row = [...(prev[itemId] || [0, 0, 0, 0, 0, 0, 0])];
-      row[hourIndex] = num;
-      return { ...prev, [itemId]: row };
-    });
-  };
-
-  const archiveShift = () => {
+  const handleArchive = () => {
     let total = 0;
-    (Object.values(liveShift) as number[][]).forEach(row => {
-      total += row.reduce((a, b) => a + b, 0);
+    Object.values(liveShift).forEach((v: ItemProduction) => {
+      if (v && v.hours) {
+        total += v.hours.reduce((a, b) => a + (b || 0), 0);
+      }
     });
-    if (total === 0) return addToast("لا يوجد إنتاج مسجل للأرشفة", "danger");
-    if (!confirm("هل تريد أرشفة الشيفت وتصفير الجدول؟")) return;
+    
+    if (total === 0) return addToast("لا يوجد إنتاج مسجل لحفظه", "danger");
+    if (!shiftInfo.supervisorId) return addToast("يرجى اختيار مشرف الوردية أولاً", "danger");
 
-    const newArchive: ArchivedShift = {
+    const supervisor = settings.users.find(u => u.id === shiftInfo.supervisorId);
+    const newShift: ArchivedShift = {
       id: Date.now(),
       date: new Date().toLocaleDateString('ar-EG'),
       ts: Date.now(),
-      user: user?.name || 'unknown',
-      data: { ...liveShift },
+      createdBy: user?.name || 'Unknown',
+      supervisor: supervisor?.name || 'Unknown',
+      shiftType: shiftInfo.type,
+      data: JSON.parse(JSON.stringify(liveShift)),
       total,
       count: Object.keys(liveShift).length
     };
 
-    setArchive(prev => [newArchive, ...prev]);
+    setArchive(prev => [newShift, ...prev]);
     setLiveShift({});
-    addToast("تمت الأرشفة بنجاح", "success");
+    addToast("تمت أرشفة بيانات الوردية بنجاح", "success");
   };
+
+  const handlePrint = (shift: ArchivedShift) => {
+    const rows = items
+      .filter(itm => {
+        const prod = shift.data[itm.id] as ItemProduction | undefined;
+        return prod && prod.hours && prod.hours.some((h: number) => h > 0);
+      })
+      .map(itm => {
+        const d = shift.data[itm.id] as ItemProduction;
+        const sum = d.hours.reduce((a, b) => a + (b || 0), 0);
+        return `
+          <tr class="item-row">
+            <td class="text-right p-2 border border-slate-900">
+               <div style="font-weight: bold;">${itm.name}</div>
+               <div style="font-size: 10px; color: #555;">${d.specNote || 'مواصفة قياسية'}</div>
+            </td>
+            ${d.hours.map(h => `<td class="text-center border border-slate-900">${h || '-'}</td>`).join('')}
+            <td class="text-center font-bold border border-slate-900" style="background: #f8fafc;">${sum}</td>
+            <td class="text-center border border-slate-900">${(sum / (itm.w || 1)).toFixed(1)}</td>
+          </tr>
+        `;
+      }).join('');
+
+    const html = `
+      <div style="direction: rtl; font-family: 'Tajawal', sans-serif; padding: 10px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 20px;">
+          <div>
+            <h1 style="font-size: 22px; margin: 0; font-weight: 900;">${settings.comp}</h1>
+            <p style="margin: 3px 0; font-weight: 700; font-size: 14px; color: #333;">بيان الإنتاج اليومي المعتمد</p>
+          </div>
+          <div style="text-align: left; font-size: 11px; background: #f1f5f9; padding: 10px; border: 1px solid #ccc; border-radius: 4px;">
+            <b>رقم التقرير:</b> #${shift.id}<br/>
+            <b>التاريخ:</b> ${shift.date}<br/>
+            <b>الوردية:</b> ${shift.shiftType}
+          </div>
+        </div>
+        
+        <table style="width: 100%; font-size: 12px; margin-bottom: 20px;">
+           <tr>
+              <td><b>المشرف:</b> ${shift.supervisor}</td>
+              <td style="text-align: left;"><b>محرر التقرير:</b> ${shift.createdBy}</td>
+           </tr>
+        </table>
+
+        <table style="width: 100%; border-collapse: collapse; margin-bottom: 30px; font-size: 11px;">
+          <thead>
+            <tr style="background: #eee;">
+              <th style="padding: 6px; border: 1px solid #000; width: 25%;">الصنف</th>
+              ${Array.from({length: 12}, (_, i) => `<th style="border: 1px solid #000; width: 4.5%;">س${i + 1}</th>`).join('')}
+              <th style="border: 1px solid #000; width: 10%;">كجم</th>
+              <th style="border: 1px solid #000; width: 10%;">عبوات</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+          <tfoot>
+            <tr style="background: #f8fafc; font-weight: 900;">
+              <td colspan="13" style="text-align: left; padding: 10px; border: 1px solid #000;">إجمالي وزن الوردية (كجم)</td>
+              <td colspan="2" style="text-align: center; font-size: 16px; border: 1px solid #000;">${shift.total.toLocaleString()}</td>
+            </tr>
+          </tfoot>
+        </table>
+
+        <div style="display: flex; justify-content: space-between; margin-top: 40px;">
+          ${settings.sigs.split('\n').map(s => `
+            <div style="text-align: center; width: 30%;">
+              <p style="font-weight: 800; border-bottom: 1px solid #000; padding-bottom: 4px; margin-bottom: 50px;">${s}</p>
+              <div style="font-size: 10px; color: #777;">التوقيع: .....................</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+
+    const printFrame = document.createElement('iframe');
+    printFrame.style.display = 'none';
+    document.body.appendChild(printFrame);
+    const frameDoc = printFrame.contentWindow?.document;
+    if (frameDoc) {
+      frameDoc.open();
+      frameDoc.write(`<html><head><link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;900&display=swap" rel="stylesheet"><style>body{font-family:'Tajawal',sans-serif;}</style></head><body>${html}</body></html>`);
+      frameDoc.close();
+      setTimeout(() => {
+        printFrame.contentWindow?.focus();
+        printFrame.contentWindow?.print();
+        setTimeout(() => document.body.removeChild(printFrame), 1000);
+      }, 500);
+    }
+  };
+
+  const backupData = async () => {
+    const data = { items, archive, settings };
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `MiniBo_DB_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    addToast("تم تصدير النسخة الاحتياطية بنجاح", "success");
+  };
+
+  const restoreData = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (re) => {
+      try {
+        const data = JSON.parse(re.target?.result as string);
+        if (data.items && data.archive && data.settings) {
+          setItems(data.items);
+          setArchive(data.archive);
+          setSettings(data.settings);
+          addToast("تمت استعادة البيانات بنجاح", "success");
+        } else {
+          throw new Error("Invalid Format");
+        }
+      } catch (err) {
+        addToast("فشل في قراءة الملف، يرجى التأكد من الصيغة", "danger");
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  if (isSplash) return <SplashScreen onFinish={() => setIsSplash(false)} />;
 
   if (!user) {
     return (
-      <div className="min-h-screen bg-slate-900 flex items-center justify-center p-4">
-        <div className="bg-white rounded-3xl p-8 w-full max-w-md shadow-2xl overflow-hidden relative">
-          <div className="absolute top-0 left-0 w-full h-2 bg-indigo-600"></div>
-          <div className="text-center mb-8">
-            <h1 className="text-4xl font-extrabold text-indigo-600 tracking-tight">Mini Bo</h1>
-            <p className="text-slate-500 font-medium mt-2">نظام الإدارة المتكامل للمصانع</p>
+      <div className="min-h-screen bg-slate-950 flex items-center justify-center p-6">
+        <div className="bg-white rounded-[3.5rem] p-12 w-full max-w-lg shadow-[0_35px_60px_-15px_rgba(0,0,0,0.5)] relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-3 bg-gradient-to-r from-indigo-500 to-indigo-800" />
+          <div className="flex flex-col items-center mb-12">
+            <AppLogo size="lg" />
+            <h1 className="text-4xl font-black text-slate-900 mt-10 tracking-tighter">PORTAL <span className="text-indigo-600">PRO</span></h1>
+            <p className="text-slate-400 font-bold text-xs uppercase tracking-[0.2em] mt-2">Industrial Management Core</p>
           </div>
-          <form onSubmit={handleLogin} className="space-y-4">
-            <div>
-              <label className="block text-sm font-bold text-slate-700 mb-1">المستخدم</label>
-              <input 
-                type="text" 
-                className="w-full px-4 py-3 rounded-xl border-2 border-slate-100 focus:border-indigo-500 outline-none transition-all"
-                placeholder="أدخل اسم المستخدم"
-                value={loginForm.user}
-                onChange={e => setLoginForm({...loginForm, user: e.target.value})}
-              />
+          <form onSubmit={handleLogin} className="space-y-6">
+            <div className="space-y-3">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pr-4">Authentication ID</label>
+              <div className="relative group">
+                <UserIcon className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-indigo-600 transition-colors" size={22} />
+                <input type="text" className="w-full pr-16 pl-6 py-5 rounded-3xl bg-slate-50 border-2 border-slate-100 focus:border-indigo-600 focus:bg-white outline-none font-bold transition-all shadow-inner" placeholder="اسم المستخدم" value={loginForm.user} onChange={e => setLoginForm({...loginForm, user: e.target.value})}/>
+              </div>
             </div>
-            <div>
-              <label className="block text-sm font-bold text-slate-700 mb-1">كلمة المرور</label>
-              <input 
-                type="password" 
-                className="w-full px-4 py-3 rounded-xl border-2 border-slate-100 focus:border-indigo-500 outline-none transition-all"
-                placeholder="••••••••"
-                value={loginForm.pass}
-                onChange={e => setLoginForm({...loginForm, pass: e.target.value})}
-              />
+            <div className="space-y-3">
+              <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pr-4">Access Key</label>
+              <div className="relative group">
+                <Lock className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-300 group-focus-within:text-indigo-600 transition-colors" size={22} />
+                <input type="password" className="w-full pr-16 pl-6 py-5 rounded-3xl bg-slate-50 border-2 border-slate-100 focus:border-indigo-600 focus:bg-white outline-none font-bold transition-all shadow-inner" placeholder="••••••••" value={loginForm.pass} onChange={e => setLoginForm({...loginForm, pass: e.target.value})}/>
+              </div>
             </div>
-            <button className="w-full bg-indigo-600 text-white font-bold py-4 rounded-xl hover:bg-indigo-700 transition-all shadow-lg shadow-indigo-200">
-              تسجيل الدخول
+            <button className="w-full bg-slate-900 text-white font-black py-6 rounded-[2rem] hover:bg-indigo-700 active:scale-95 transition-all shadow-2xl text-lg mt-4 flex items-center justify-center gap-3">
+               دخول للنظام <ChevronRight size={20} />
             </button>
           </form>
         </div>
@@ -282,174 +347,348 @@ const App: React.FC = () => {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-slate-50">
-      <div className="fixed bottom-4 left-4 z-[9999] flex flex-col gap-2">
-        {toasts.map(t => (
-          <div key={t.id} className={`flex items-center gap-3 px-6 py-4 rounded-2xl text-white shadow-xl animate-bounce-in ${t.type === 'success' ? 'bg-emerald-500' : 'bg-rose-500'}`}>
-            <Info size={20} />
-            <span className="font-bold">{t.msg}</span>
-          </div>
-        ))}
-      </div>
-
-      <aside className="w-72 bg-slate-900 flex flex-col no-print shrink-0">
-        <div className="p-8">
-          <div className="flex items-center gap-3 mb-1">
-            <div className="w-10 h-10 bg-indigo-600 rounded-xl flex items-center justify-center text-white">
-              <Factory size={24} />
-            </div>
-            <h1 className="text-2xl font-black text-white tracking-tighter uppercase">Mini Bo <span className="text-indigo-500">Pro</span></h1>
-          </div>
-          <p className="text-slate-500 text-xs font-bold mr-11 tracking-widest">SYSTEM V2.5</p>
+    <div className="flex h-screen overflow-hidden bg-[#f1f5f9] font-['Tajawal']">
+      <aside className="w-80 bg-slate-900 flex flex-col no-print shrink-0 border-l border-slate-800 shadow-2xl z-50">
+        <div className="p-10 flex items-center gap-5 border-b border-slate-800">
+          <AppLogo size="sm" />
+          <h1 className="text-2xl font-black text-white tracking-tighter uppercase italic">Mini Bo <span className="text-indigo-500">Pro</span></h1>
         </div>
-
-        <nav className="flex-1 px-4 space-y-2 overflow-y-auto custom-scrollbar">
-          <SidebarItem id="dash" active={activeTab === 'dash'} label="لوحة التحكم" icon={<LayoutDashboard size={20}/>} onClick={setActiveTab} />
-          <SidebarItem id="prod" active={activeTab === 'prod'} label="الإنتاج المباشر" icon={<Factory size={20}/>} onClick={setActiveTab} />
-          <SidebarItem id="items" active={activeTab === 'items'} label="الأصناف" icon={<Box size={20}/>} onClick={setActiveTab} />
-          <SidebarItem id="arch" active={activeTab === 'arch'} label="الأرشيف" icon={<History size={20}/>} onClick={setActiveTab} />
-          <SidebarItem id="sets" active={activeTab === 'sets'} label="الإعدادات" icon={<Settings size={20}/>} onClick={setActiveTab} />
+        
+        <nav className="flex-1 px-6 pt-10 space-y-3 overflow-y-auto custom-scrollbar">
+          <p className="text-[10px] font-black text-slate-500 uppercase px-6 mb-6 tracking-[0.3em]">Core Modules</p>
+          <NavItem id="dash" active={activeTab === 'dash'} label="الإحصائيات" icon={<LayoutDashboard size={22}/>} onClick={setActiveTab} />
+          <NavItem id="prod" active={activeTab === 'prod'} label="تسجيل الإنتاج" icon={<Zap size={22}/>} onClick={setActiveTab} />
+          <NavItem id="items" active={activeTab === 'items'} label="كتالوج الأصناف" icon={<Layers size={22}/>} onClick={setActiveTab} />
+          
+          <div className="pt-10">
+            <p className="text-[10px] font-black text-slate-500 uppercase px-6 mb-6 tracking-[0.3em]">Governance</p>
+            <NavItem id="arch" active={activeTab === 'arch'} label="الأرشيف المعتمد" icon={<History size={22}/>} onClick={setActiveTab} />
+            <NavItem id="sets" active={activeTab === 'sets'} label="الإعدادات" icon={<Settings size={22}/>} onClick={setActiveTab} />
+          </div>
         </nav>
 
-        <div className="p-4 border-t border-slate-800">
-          <button onClick={() => setUser(null)} className="w-full flex items-center gap-3 px-4 py-3 rounded-xl text-rose-400 hover:bg-rose-500/10 hover:text-rose-500 transition-all font-bold">
-            <LogOut size={20} /> خروج
+        <div className="p-8 border-t border-slate-800 bg-slate-950/50">
+          <button onClick={() => setUser(null)} className="w-full p-5 rounded-2xl text-rose-400 font-black flex gap-3 items-center hover:bg-rose-500/10 transition-all active:scale-95">
+            <LogOut size={22}/> تسجيل الخروج
           </button>
         </div>
       </aside>
 
-      <main className="flex-1 flex flex-col overflow-hidden relative">
-        <header className="h-20 bg-white border-b border-slate-100 flex items-center justify-between px-8 no-print shrink-0">
-          <h2 className="text-xl font-extrabold text-slate-800">
-            {activeTab === 'dash' && 'الرؤية البيانية'}
-            {activeTab === 'prod' && 'تسجيل التقرير اليومي'}
-            {activeTab === 'items' && 'إدارة الأصناف والمواصفات'}
-            {activeTab === 'arch' && 'سجلات الأرشفة'}
-            {activeTab === 'sets' && 'تخصيص النظام'}
-          </h2>
-          <div className="flex items-center gap-3 px-4 py-2 bg-indigo-50 rounded-xl">
-            <div className="w-8 h-8 rounded-full bg-indigo-600 flex items-center justify-center text-white font-bold text-xs">{user.name[0].toUpperCase()}</div>
-            <div className="text-right">
-              <p className="text-sm font-bold text-slate-900 leading-none">{user.name}</p>
-              <p className="text-[10px] font-bold text-indigo-500 uppercase">{user.role}</p>
+      <main className="flex-1 flex flex-col overflow-hidden">
+        <header className="h-28 bg-white/80 backdrop-blur-xl border-b border-slate-200 flex items-center justify-between px-12 no-print shrink-0 z-40">
+          <div>
+            <h2 className="text-3xl font-black text-slate-900 tracking-tight">
+              {activeTab === 'dash' && 'التقرير التحليلي'}
+              {activeTab === 'prod' && 'منصة تسجيل الإنتاج'}
+              {activeTab === 'items' && 'قاعدة بيانات الأصناف'}
+              {activeTab === 'arch' && 'أرشيف الورديات'}
+              {activeTab === 'sets' && 'إدارة المنظومة'}
+            </h2>
+            <div className="flex items-center gap-3 mt-1.5">
+               <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+               <p className="text-slate-400 text-xs font-bold uppercase tracking-widest">System Online & Secure</p>
+            </div>
+          </div>
+          
+          <div className="flex items-center gap-5">
+            <div className="text-left flex flex-col items-end">
+              <span className="text-lg font-black text-slate-900">{user.name}</span>
+              <span className="text-[10px] font-black text-indigo-600 bg-indigo-50 px-3 py-1 rounded-full uppercase tracking-tighter">{user.role} Account</span>
+            </div>
+            <div className="w-14 h-14 rounded-3xl bg-slate-900 flex items-center justify-center text-white shadow-xl shadow-slate-200 ring-4 ring-white">
+               <UserIcon size={28} />
             </div>
           </div>
         </header>
 
-        <section className="flex-1 overflow-y-auto p-8 no-print custom-scrollbar">
-          {activeTab === 'dash' && <Dashboard items={items} archive={archive} settings={settings} liveShift={liveShift} />}
+        <section className="flex-1 overflow-y-auto p-12 custom-scrollbar no-print bg-[#f8fafc]">
+          {activeTab === 'dash' && <Dashboard items={items} archive={archive} />}
+          
           {activeTab === 'prod' && (
-            <Production 
-              items={items} 
-              settings={settings} 
-              liveShift={liveShift} 
-              selectedBrd={selectedBrd} 
-              setSelectedBrd={setSelectedBrd} 
-              updateLive={updateLive} 
-              archiveShift={archiveShift}
-              user={user}
-            />
+            <div className="space-y-10 animate-in fade-in slide-in-from-bottom-6 duration-700">
+              <div className="bg-white p-12 rounded-[3.5rem] shadow-xl shadow-slate-200/50 border border-slate-100 grid grid-cols-1 md:grid-cols-3 gap-10 items-end relative overflow-hidden">
+                <div className="absolute top-0 right-0 p-8 opacity-[0.03] pointer-events-none text-indigo-900"><Activity size={120} /></div>
+                <div className="space-y-4">
+                  <label className="text-xs font-black text-slate-500 uppercase pr-2 flex items-center gap-2 tracking-widest"><UserCheck size={16} className="text-indigo-500"/> المشرف المسؤول</label>
+                  <select className="w-full px-6 py-5 rounded-[1.5rem] bg-slate-50 border-2 border-slate-100 focus:border-indigo-600 focus:bg-white outline-none font-bold transition-all shadow-inner" value={shiftInfo.supervisorId} onChange={e => setShiftInfo({...shiftInfo, supervisorId: e.target.value})}>
+                    <option value="">اختر مشرف الوردية</option>
+                    {settings.users.map(u => <option key={u.id} value={u.id}>{u.name}</option>)}
+                  </select>
+                </div>
+                <div className="space-y-4">
+                  <label className="text-xs font-black text-slate-500 uppercase pr-2 flex items-center gap-2 tracking-widest"><Clock size={16} className="text-indigo-500"/> توقيت الوردية</label>
+                  <select className="w-full px-6 py-5 rounded-[1.5rem] bg-slate-50 border-2 border-slate-100 focus:border-indigo-600 focus:bg-white outline-none font-bold transition-all shadow-inner" value={shiftInfo.type} onChange={e => setShiftInfo({...shiftInfo, type: e.target.value as ShiftType})}>
+                    <option value="morning">وردية صباحية</option>
+                    <option value="evening">وردية مسائية</option>
+                    <option value="night">وردية ليلية</option>
+                  </select>
+                </div>
+                <button onClick={handleArchive} className="bg-indigo-600 text-white font-black py-5 rounded-[1.5rem] shadow-2xl shadow-indigo-200 hover:bg-indigo-700 hover:-translate-y-1 transition-all flex items-center justify-center gap-3 text-lg">
+                   <ShieldCheck size={24}/> أرشفة الوردية
+                </button>
+              </div>
+
+              <ProductionTable 
+                items={items} 
+                liveShift={liveShift} 
+                selectedBrd={selectedBrd} 
+                setSelectedBrd={setSelectedBrd} 
+                brds={settings.brds}
+                onUpdate={(id, idx, val) => {
+                  const num = parseFloat(val) || 0;
+                  setLiveShift(prev => {
+                    const curr = prev[id] || { hours: Array(12).fill(0), specNote: '' };
+                    const nh = [...curr.hours]; nh[idx] = num;
+                    return { ...prev, [id]: { ...curr, hours: nh } };
+                  });
+                }}
+                onUpdateSpec={(id, val) => {
+                  setLiveShift(prev => {
+                    const curr = prev[id] || { hours: Array(12).fill(0), specNote: '' };
+                    return { ...prev, [id]: { ...curr, specNote: val } };
+                  });
+                }}
+              />
+            </div>
           )}
-          {activeTab === 'items' && <Items items={items} settings={settings} addItem={addItem} removeItem={removeItem} user={user} />}
-          {activeTab === 'arch' && <Archive archive={archive} items={items} settings={settings} />}
-          {activeTab === 'sets' && <SettingsView settings={settings} setSettings={setSettings} user={user} addToast={addToast} />}
+
+          {activeTab === 'items' && <ItemsView items={items} brds={settings.brds} onAdd={(n, b, w) => setItems(prev => [...prev, {id: Date.now(), name: n, brd: b, w}])} onRemove={id => setItems(prev => prev.filter(i => i.id !== id))} />}
+          
+          {activeTab === 'arch' && (
+            <div className="space-y-10 animate-in fade-in duration-700">
+              <div className="flex flex-col md:flex-row gap-6 items-center justify-between bg-white p-10 rounded-[3rem] border border-slate-100 shadow-xl shadow-slate-200/50">
+                 <div className="relative w-full md:w-[500px]">
+                   <Search className="absolute right-6 top-1/2 -translate-y-1/2 text-slate-300" size={24} />
+                   <input type="text" className="w-full pr-16 pl-8 py-5 rounded-[1.5rem] bg-slate-50 border-none font-bold outline-none shadow-inner text-lg" placeholder="بحث برقم المرجع..." value={searchRef} onChange={e => setSearchRef(e.target.value)}/>
+                 </div>
+                 <button onClick={() => {
+                   if (archive.length === 0) return addToast("لا توجد بيانات لتصديرها", "danger");
+                   const ws = XLSX.utils.json_to_sheet(archive.map(s => ({ المرجع: s.id, التاريخ: s.date, الوردية: s.shiftType, المشرف: s.supervisor, الإجمالي: s.total })));
+                   const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, "Archive");
+                   XLSX.writeFile(wb, "MiniBo_Archive_Report.xlsx");
+                 }} className="bg-emerald-600 text-white px-10 py-5 rounded-[1.5rem] font-black flex items-center gap-4 hover:bg-emerald-700 transition-all shadow-xl shadow-emerald-100">
+                   <FileSpreadsheet size={24}/> تصدير Excel
+                 </button>
+              </div>
+
+              <div className="bg-white rounded-[3.5rem] border border-slate-100 overflow-hidden shadow-xl shadow-slate-200/50">
+                <table className="w-full text-right">
+                  <thead className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-100">
+                    <tr><th className="p-10">المرجع</th><th className="p-10">التفاصيل</th><th className="p-10">المسؤولية</th><th className="p-10">الإنتاج</th><th className="p-10 text-center">الإجراءات</th></tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {archive.filter(s => s.id.toString().includes(searchRef)).map(s => (
+                      <tr key={s.id} className="hover:bg-indigo-50/30 transition-colors group">
+                        <td className="p-10 font-black text-indigo-600 text-lg tracking-tighter">#{s.id}</td>
+                        <td className="p-10">
+                          <div className="flex flex-col gap-1.5">
+                            <span className="font-bold text-slate-800 flex items-center gap-2"><Calendar size={16} className="text-slate-400"/> {s.date}</span>
+                            <span className="text-[10px] font-black text-indigo-500 bg-indigo-50 w-fit px-3 py-1 rounded-full uppercase">{s.shiftType} SHIFT</span>
+                          </div>
+                        </td>
+                        <td className="p-10">
+                           <div className="flex flex-col gap-1.5">
+                             <span className="font-bold text-slate-700 flex items-center gap-2"><UserIcon size={16} className="text-slate-400"/> {s.createdBy}</span>
+                             <span className="text-xs font-bold text-slate-400 flex items-center gap-2">المشرف: {s.supervisor}</span>
+                           </div>
+                        </td>
+                        <td className="p-10">
+                           <div className="flex items-baseline gap-2">
+                              <span className="font-black text-3xl text-slate-900 tracking-tighter">{s.total.toLocaleString()}</span>
+                              <span className="text-xs font-bold text-slate-300 uppercase">KG</span>
+                           </div>
+                        </td>
+                        <td className="p-10 text-center">
+                          <button onClick={() => handlePrint(s)} className="bg-white text-indigo-600 p-5 rounded-2xl hover:bg-indigo-600 hover:text-white transition-all shadow-lg border border-indigo-100">
+                            <Printer size={24}/>
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {archive.length === 0 && (
+                      <tr><td colspan="5" className="p-20 text-center text-slate-300 font-bold">لا توجد سجلات مؤرشفة حالياً</td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {activeTab === 'sets' && <SettingsView settings={settings} setSettings={setSettings} onBackup={backupData} onRestore={restoreData} addToast={addToast} />}
         </section>
+
+        <div className="fixed bottom-10 left-10 flex flex-col gap-4 z-[10000]">
+          {toasts.map(t => (
+            <div key={t.id} className={`flex items-center gap-4 px-10 py-6 rounded-[2rem] text-white shadow-2xl animate-bounce-in font-black text-lg ${t.type === 'success' ? 'bg-emerald-600 shadow-emerald-200' : 'bg-rose-600 shadow-rose-200'}`}>
+              <Check size={24} /> <span>{t.msg}</span>
+            </div>
+          ))}
+        </div>
       </main>
     </div>
   );
 };
 
-const Dashboard: React.FC<{ items: Item[], archive: ArchivedShift[], settings: AppSettings, liveShift: ShiftData }> = ({ items, archive, settings, liveShift }) => {
-  const todayProd = (Object.values(liveShift) as number[][]).reduce((acc, row) => acc + row.reduce((a, b) => a + b, 0), 0);
-  const COLORS = ['#4f46e5', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+const NavItem: React.FC<{ id: TabId, active: boolean, label: string, icon: React.ReactNode, onClick: (id: TabId) => void }> = ({ id, active, label, icon, onClick }) => (
+  <button onClick={() => onClick(id)} className={`w-full flex items-center gap-5 px-8 py-6 rounded-[2rem] transition-all duration-500 font-black text-lg ${active ? 'bg-indigo-600 text-white shadow-2xl shadow-indigo-500/40 translate-x-2' : 'text-slate-500 hover:bg-slate-800 hover:text-white hover:translate-x-1'}`}>
+    {icon} <span>{label}</span>
+  </button>
+);
 
+const Dashboard: React.FC<{ items: Item[], archive: ArchivedShift[] }> = ({ items, archive }) => {
+  const chartData = useMemo(() => {
+    if (!archive || archive.length === 0) return [];
+    return archive.slice(0, 7).reverse().map(s => ({ name: s.date, total: s.total }));
+  }, [archive]);
+  
   return (
-    <div className="space-y-8">
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-        <StatCard title="إنتاج اللحظة" value={`${todayProd.toLocaleString()} كجم`} color="bg-indigo-600" />
-        <StatCard title="إجمالي الأصناف" value={items.length} color="bg-emerald-500" />
-        <StatCard title="المواصفات المسجلة" value={settings.specs.length} color="bg-amber-500" />
-        <StatCard title="عدد البراندات" value={settings.brds.length} color="bg-rose-500" />
+    <div className="space-y-12 animate-in fade-in duration-1000">
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-10">
+         <StatCard label="إنتاج آخر 7 ورديات" value={archive.slice(0,7).reduce((a,b)=>a+(b.total || 0),0).toLocaleString()} sub="KILOGRAMS" color="indigo" icon={<TrendingUp size={28}/>} />
+         <StatCard label="الكتالوج الصناعي" value={items.length.toString()} sub="PRODUCTS" color="slate" icon={<Layers size={28}/>} />
+         <StatCard label="إجمالي الأرشيف" value={archive.length.toString()} sub="SHIFTS" color="slate" icon={<History size={28}/>} />
+         <StatCard label="معدل الأداء اليومي" value={archive.length ? Math.round(archive.reduce((a,b)=>a+(b.total || 0),0)/archive.length).toLocaleString() : '0'} sub="AVG KG/DAY" color="emerald" icon={<Activity size={28}/>} />
+      </div>
+      
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-10">
+        <div className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-xl shadow-slate-200/50 h-[500px] flex flex-col">
+           <h3 className="font-black text-xl mb-10 text-slate-900 flex items-center gap-3"><TrendingUp size={24} className="text-indigo-600"/> تحليل حجم الإنتاج الأسبوعي</h3>
+           <div className="flex-1 min-h-0">
+             {chartData.length > 0 ? (
+               <ResponsiveContainer width="100%" height="100%">
+                  <AreaChart data={chartData}>
+                     <defs>
+                       <linearGradient id="colorTotal" x1="0" y1="0" x2="0" y2="1">
+                         <stop offset="5%" stopColor="#6366f1" stopOpacity={0.2}/>
+                         <stop offset="95%" stopColor="#6366f1" stopOpacity={0}/>
+                       </linearGradient>
+                     </defs>
+                     <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
+                     <XAxis dataKey="name" axisLine={false} tickLine={false} fontSize={12} fontWeight={800} stroke="#94a3b8" dy={15} />
+                     <YAxis axisLine={false} tickLine={false} fontSize={12} fontWeight={800} stroke="#94a3b8" dx={-15} />
+                     <Tooltip 
+                        contentStyle={{borderRadius:'24px', border:'none', boxShadow:'0 25px 50px -12px rgba(0,0,0,0.15)', padding: '20px'}}
+                        itemStyle={{fontWeight: 900, color: '#6366f1'}}
+                      />
+                     <Area type="monotone" dataKey="total" stroke="#6366f1" strokeWidth={5} fillOpacity={1} fill="url(#colorTotal)" />
+                  </AreaChart>
+               </ResponsiveContainer>
+             ) : (
+               <div className="h-full flex flex-col items-center justify-center text-slate-300 gap-4">
+                  <Activity size={48} />
+                  <p className="font-bold">لا توجد بيانات بيانية كافية</p>
+               </div>
+             )}
+           </div>
+        </div>
+
+        <div className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-xl shadow-slate-200/50 h-[500px] flex flex-col">
+           <h3 className="font-black text-xl mb-10 text-slate-900 flex items-center gap-3"><Layers size={24} className="text-indigo-600"/> التوزيع النسبي للمنتجات (الوردية الأخيرة)</h3>
+           <div className="flex-1 min-h-0">
+             {archive.length > 0 ? (
+               <ResponsiveContainer width="100%" height="100%">
+                 <PieChart>
+                    <Pie 
+                      data={Object.keys(archive[0].data).map(id => {
+                        const itemId = Number(id);
+                        const prod = archive[0].data[itemId];
+                        return { 
+                          name: items.find(i => i.id === itemId)?.name || 'Unknown', 
+                          value: (prod && prod.hours) ? prod.hours.reduce((a: number, b: number) => a + (b || 0), 0) : 0 
+                        };
+                      }).filter(d => d.value > 0)} 
+                      cx="50%" cy="50%" 
+                      innerRadius={100} 
+                      outerRadius={140} 
+                      paddingAngle={8} 
+                      dataKey="value"
+                    >
+                      {Object.keys(archive[0].data).map((_, i) => <Cell key={i} fill={['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#06b6d4'][i % 6]} stroke="none" />)}
+                    </Pie>
+                    <Tooltip contentStyle={{borderRadius:'24px', border:'none'}} />
+                    <Legend verticalAlign="bottom" height={40} iconType="circle"/>
+                 </PieChart>
+               </ResponsiveContainer>
+             ) : (
+               <div className="h-full flex flex-col items-center justify-center text-slate-300 gap-4">
+                  <Layers size={48} />
+                  <p className="font-bold">يرجى أرشفة أول وردية لعرض التحليل</p>
+               </div>
+             )}
+           </div>
+        </div>
       </div>
     </div>
   );
 };
 
-const StatCard: React.FC<{ title: string, value: string | number, color: string }> = ({ title, value, color }) => (
-  <div className={`${color} rounded-3xl p-6 text-white shadow-xl relative overflow-hidden group`}>
-    <div className="absolute -right-4 -bottom-4 opacity-10 group-hover:scale-110 transition-transform"><Factory size={100} /></div>
-    <p className="text-xs font-bold opacity-80 mb-1 uppercase">{title}</p>
-    <p className="text-3xl font-black">{value}</p>
+const StatCard = ({ label, value, sub, color, icon }: any) => (
+  <div className="bg-white p-12 rounded-[3rem] shadow-xl shadow-slate-200/50 border border-slate-100 flex flex-col relative overflow-hidden group hover:-translate-y-2 transition-all duration-500">
+    <div className={`absolute -right-6 -top-6 w-32 h-32 rounded-full opacity-[0.03] ${color === 'indigo' ? 'bg-indigo-600' : 'bg-slate-950'} group-hover:scale-150 transition-transform duration-700`} />
+    <div className={`mb-10 p-5 rounded-3xl w-fit ${color === 'indigo' ? 'bg-indigo-50 text-indigo-600' : 'bg-slate-100 text-slate-900'} shadow-sm`}>
+      {icon}
+    </div>
+    <p className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] mb-2">{label}</p>
+    <div className="flex items-baseline gap-3">
+      <span className="text-5xl font-black text-slate-900 tracking-tighter">{value}</span>
+      <span className="text-[10px] font-black text-slate-300 uppercase tracking-widest">{sub}</span>
+    </div>
   </div>
 );
 
-const Production: React.FC<{ 
-  items: Item[], 
-  settings: AppSettings, 
-  liveShift: ShiftData, 
-  selectedBrd: string, 
-  setSelectedBrd: (b: string) => void,
-  updateLive: (id: number, idx: number, val: string) => void,
-  archiveShift: () => void,
-  user: User
-}> = ({ items, settings, liveShift, selectedBrd, setSelectedBrd, updateLive, archiveShift, user }) => {
-  const filteredItems = items.filter(i => i.brd === selectedBrd);
-
+const ProductionTable: React.FC<any> = ({ items, liveShift, selectedBrd, setSelectedBrd, brds, onUpdate, onUpdateSpec }) => {
+  const filtered = items.filter((i: any) => i.brd === selectedBrd);
   return (
-    <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
-      <div className="p-8 bg-slate-50 border-b border-slate-100 flex justify-between items-center">
-        <select 
-          className="px-6 py-3 rounded-xl border-2 border-slate-200 bg-white outline-none focus:border-indigo-500 font-bold min-w-[200px]"
-          value={selectedBrd}
-          onChange={e => setSelectedBrd(e.target.value)}
-        >
-          {settings.brds.map(b => <option key={b} value={b}>{b}</option>)}
-        </select>
-        {(user.role === 'admin' || user.role === 'super') && (
-          <button onClick={archiveShift} className="flex items-center gap-3 px-8 py-3 bg-emerald-500 text-white rounded-xl hover:bg-emerald-600 font-bold shadow-lg shadow-emerald-100">
-            <CheckCircle2 size={20} /> أرشفة وإغلاق
-          </button>
-        )}
+    <div className="bg-white rounded-[3.5rem] border border-slate-100 overflow-hidden shadow-2xl shadow-slate-200/50">
+      <div className="p-12 border-b border-slate-50 flex flex-col md:flex-row justify-between items-center gap-10 bg-slate-50/50 backdrop-blur-md">
+        <div className="flex items-center gap-5">
+          <div className="p-4 bg-slate-900 rounded-[1.2rem] text-white shadow-xl"><Activity size={24}/></div>
+          <div>
+            <h3 className="font-black text-2xl text-slate-900 tracking-tight">شبكة تسجيل البيانات</h3>
+            <p className="text-[10px] text-slate-400 font-black uppercase tracking-widest mt-1">Real-time Production Entry</p>
+          </div>
+        </div>
+        <div className="flex gap-4 w-full md:w-auto">
+          <select className="flex-1 md:w-80 px-8 py-5 rounded-[1.5rem] bg-white border-2 border-slate-200 font-black outline-none focus:border-indigo-600 focus:ring-4 focus:ring-indigo-50 transition-all shadow-sm text-lg" value={selectedBrd} onChange={e => setSelectedBrd(e.target.value)}>
+            {brds.map((b: any) => <option key={b} value={b}>{b}</option>)}
+          </select>
+        </div>
       </div>
-      
-      <div className="overflow-x-auto">
-        <table className="w-full text-right">
+      <div className="overflow-x-auto custom-scrollbar">
+        <table className="w-full text-right border-collapse">
           <thead>
-            <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 text-[11px] font-black uppercase">
-              <th className="p-6">الصنف والمواصفة</th>
-              <th className="p-4 text-center">س1</th><th className="p-4 text-center">س2</th>
-              <th className="p-4 text-center">س3</th><th className="p-4 text-center">س4</th>
-              <th className="p-4 text-center">س5</th><th className="p-4 text-center">س6</th>
-              <th className="p-4 text-center">Ex</th><th className="p-4 text-center">الإجمالي</th>
+            <tr className="bg-slate-50 text-[10px] font-black text-slate-400 uppercase tracking-[0.2em] border-b border-slate-100">
+              <th className="p-10 sticky right-0 bg-slate-50 z-10 border-b border-slate-100">اسم الصنف</th>
+              <th className="p-10 border-b border-slate-100">المواصفة</th>
+              {Array.from({length:12}).map((_,i)=><th key={i} className="p-2 text-center w-16 border-b border-slate-100">س${i+1}</th>)}
+              <th className="p-10 text-center border-b border-slate-100">الإجمالي</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
-            {filteredItems.map(item => {
-              const spec = settings.specs.find(s => s.id === item.specId);
-              const row = (liveShift[item.id] || [0, 0, 0, 0, 0, 0, 0]) as number[];
-              const total = row.reduce((a, b) => a + b, 0);
+            {filtered.map((itm: any) => {
+              const data = liveShift[itm.id] || { hours: Array(12).fill(0), specNote: '' };
+              const total = data.hours.reduce((a:any, b:any)=>a+(b||0), 0);
               return (
-                <tr key={item.id} className="hover:bg-slate-50">
-                  <td className="p-6">
-                    <p className="font-bold text-slate-800">{item.name}</p>
-                    {spec && <p className="text-[10px] text-indigo-500 font-black">مواصفة: {spec.num} - {spec.name}</p>}
-                    {!spec && <p className="text-[10px] text-slate-400 font-bold">بدون مواصفة قياسية</p>}
+                <tr key={itm.id} className="hover:bg-indigo-50/30 transition-colors group">
+                  <td className="p-10 sticky right-0 bg-white group-hover:bg-transparent z-10 border-l border-slate-50 transition-colors">
+                    <div className="font-black text-slate-900 text-lg tracking-tight">{itm.name}</div>
+                    <div className="text-[10px] font-bold text-indigo-500 uppercase mt-1 tracking-tighter">{itm.w} KG UNIT WEIGHT</div>
                   </td>
-                  {row.map((val, idx) => (
-                    <td key={idx} className="p-2 text-center">
-                      <input 
-                        type="number" 
-                        disabled={user.role === 'view'}
-                        className="w-16 h-10 rounded-lg border border-slate-200 text-center font-bold outline-none focus:border-indigo-500 disabled:bg-slate-50"
-                        value={val || ''}
-                        onChange={e => updateLive(item.id, idx, e.target.value)}
-                      />
+                  <td className="p-4">
+                    <input type="text" className="w-32 px-5 py-4 rounded-2xl bg-slate-50 border-none font-bold text-xs focus:ring-4 focus:ring-indigo-100 transition-all outline-none" value={data.specNote} onChange={e => onUpdateSpec(itm.id, e.target.value)} placeholder="رقم المواصفة"/>
+                  </td>
+                  {data.hours.map((v: any, idx: any) => (
+                    <td key={idx} className="p-1">
+                      <input type="number" className="w-16 h-14 rounded-2xl bg-white border-2 border-slate-100 text-center font-black text-sm hover:border-indigo-400 focus:border-indigo-600 focus:ring-4 focus:ring-indigo-50 outline-none transition-all shadow-sm" value={v || ''} onChange={e => onUpdate(itm.id, idx, e.target.value)}/>
                     </td>
                   ))}
-                  <td className="p-4 text-center font-black text-indigo-600">{total.toLocaleString()}</td>
+                  <td className="p-10 text-center font-black text-4xl text-slate-900 tracking-tighter">{total}</td>
                 </tr>
               );
             })}
+            {filtered.length === 0 && (
+              <tr><td colspan="15" className="p-32 text-center text-slate-300 font-bold">يرجى إضافة أصناف لهذا البراند من قسم "كتالوج الأصناف"</td></tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -457,301 +696,171 @@ const Production: React.FC<{
   );
 };
 
-const Items: React.FC<{ items: Item[], settings: AppSettings, addItem: (n: string, b: string, w: number, sid?: number) => void, removeItem: (id: number) => void, user: User }> = ({ items, settings, addItem, removeItem, user }) => {
-  const [form, setForm] = useState({ name: '', brd: settings.brds[0], w: '', specId: '' });
-
+const ItemsView: React.FC<any> = ({ items, brds, onAdd, onRemove }) => {
+  const [f, setF] = useState({ n: '', b: brds[0] || '', w: '' });
   return (
-    <div className="space-y-8">
-      {user.role === 'admin' && (
-        <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100">
-          <h3 className="text-lg font-extrabold text-slate-800 mb-6 flex items-center gap-2"><Plus size={20}/> صنف جديد</h3>
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
-            <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">اسم الصنف</label>
-              <input type="text" className="w-full px-4 py-3 rounded-xl border-2 border-slate-100 outline-none focus:border-indigo-500 font-bold" value={form.name} onChange={e => setForm({...form, name: e.target.value})}/>
-            </div>
-            <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">البراند</label>
-              <select className="w-full px-4 py-3 rounded-xl border-2 border-slate-100 font-bold" value={form.brd} onChange={e => setForm({...form, brd: e.target.value})}>
-                {settings.brds.map(b => <option key={b} value={b}>{b}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">الوزن (كجم)</label>
-              <input type="number" className="w-full px-4 py-3 rounded-xl border-2 border-slate-100 font-bold" value={form.w} onChange={e => setForm({...form, w: e.target.value})}/>
-            </div>
-            <div>
-              <label className="block text-[10px] font-black text-slate-400 uppercase mb-1">المواصفة (اختياري)</label>
-              <select className="w-full px-4 py-3 rounded-xl border-2 border-slate-100 font-bold" value={form.specId} onChange={e => setForm({...form, specId: e.target.value})}>
-                <option value="">بدون مواصفة</option>
-                {settings.specs.map(s => <option key={s.id} value={s.id}>{s.num} - {s.name}</option>)}
-              </select>
-            </div>
-            <button 
-              onClick={() => {
-                addItem(form.name, form.brd, parseFloat(form.w), form.specId ? parseInt(form.specId) : undefined);
-                setForm({ name: '', brd: settings.brds[0], w: '', specId: '' });
-              }}
-              className="h-14 bg-indigo-600 text-white rounded-xl hover:bg-indigo-700 font-bold shadow-lg"
-            >
-              إضافة للنظام
-            </button>
+    <div className="space-y-12 animate-in slide-in-from-right-12 duration-700">
+       <div className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-xl shadow-slate-200/50 relative overflow-hidden">
+          <div className="absolute top-0 left-0 w-full h-2 bg-emerald-500" />
+          <div className="flex items-center gap-5 mb-12">
+             <div className="p-4 bg-emerald-100 text-emerald-600 rounded-2xl shadow-sm"><Plus size={24}/></div>
+             <h3 className="text-2xl font-black text-slate-900 tracking-tight">تسجيل منتج جديد في النظام</h3>
           </div>
-        </div>
-      )}
-
-      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
-        <table className="w-full text-right">
-          <thead>
-            <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 text-[11px] font-black uppercase">
-              <th className="p-6">الصنف</th><th className="p-6">البراند</th><th className="p-6">المواصفة المرتبطة</th><th className="p-6">الوزن</th><th className="p-6 text-center">حذف</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {items.map(item => {
-              const spec = settings.specs.find(s => s.id === item.specId);
-              return (
-                <tr key={item.id} className="hover:bg-slate-50">
-                  <td className="p-6 font-bold">{item.name}</td>
-                  <td className="p-6"><span className="px-3 py-1 bg-indigo-50 text-indigo-600 rounded-lg text-xs font-bold">{item.brd}</span></td>
-                  <td className="p-6 font-bold text-xs text-slate-600">{spec ? `${spec.num} - ${spec.name}` : '-'}</td>
-                  <td className="p-6 font-medium">{item.w} كجم</td>
-                  <td className="p-6 text-center">
-                    <button onClick={() => removeItem(item.id)} className="p-2 text-rose-400 hover:bg-rose-50 rounded-lg transition-all"><Trash2 size={18} /></button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-10 items-end">
+            <div className="space-y-4">
+              <label className="text-[10px] font-black text-slate-400 uppercase pr-4 tracking-widest">Product Name</label>
+              <input type="text" className="w-full px-8 py-5 rounded-[1.5rem] bg-slate-50 border-none outline-none font-bold shadow-inner text-lg" placeholder="اسم المنتج" value={f.n} onChange={e => setF({...f, n: e.target.value})} />
+            </div>
+            <div className="space-y-4">
+              <label className="text-[10px] font-black text-slate-400 uppercase pr-4 tracking-widest">Brand Line</label>
+              <select className="w-full px-8 py-5 rounded-[1.5rem] bg-slate-50 border-none font-bold shadow-inner text-lg" value={f.b} onChange={e => setF({...f, b: e.target.value})}>
+                 <option value="">اختر البراند</option>
+                 {brds.map((b:any)=><option key={b} value={b}>{b}</option>)}
+              </select>
+            </div>
+            <div className="space-y-4">
+              <label className="text-[10px] font-black text-slate-400 uppercase pr-4 tracking-widest">Unit Weight (KG)</label>
+              <input type="number" step="0.01" className="w-full px-8 py-5 rounded-[1.5rem] bg-slate-50 border-none font-bold shadow-inner text-lg" placeholder="0.00" value={f.w} onChange={e => setF({...f, w: e.target.value})} />
+            </div>
+            <button onClick={() => { if(f.n && f.w && f.b) { onAdd(f.n, f.b, parseFloat(f.w)); setF({n:'', b:brds[0], w:''}); } }} className="bg-slate-900 text-white font-black py-6 rounded-[1.5rem] hover:bg-slate-800 active:scale-95 transition-all shadow-2xl text-lg">إضافة للمخزن</button>
+          </div>
+       </div>
+       
+       <div className="bg-white rounded-[3.5rem] border border-slate-100 overflow-hidden shadow-xl shadow-slate-200/50">
+          <table className="w-full text-right">
+             <thead className="bg-slate-50 text-[10px] text-slate-400 font-black uppercase tracking-[0.2em] border-b border-slate-100">
+                <tr><th className="p-10">اسم الصنف</th><th className="p-10">العلامة التجارية</th><th className="p-10">الوزن الصافي</th><th className="p-10 text-center">إجراءات</th></tr>
+             </thead>
+             <tbody className="divide-y divide-slate-100">
+                {items.map((i:any)=>(
+                   <tr key={i.id} className="hover:bg-slate-50/50 transition-all">
+                      <td className="p-10 font-black text-slate-900 text-lg tracking-tight">{i.name}</td>
+                      <td className="p-10"><span className="px-6 py-2 bg-indigo-50 text-indigo-700 rounded-full font-black text-[10px] uppercase tracking-wider">{i.brd}</span></td>
+                      <td className="p-10 font-black text-slate-600">{i.w} كجم</td>
+                      <td className="p-10 text-center"><button onClick={() => onRemove(i.id)} className="text-rose-400 p-4 rounded-2xl hover:bg-rose-50 transition-all active:scale-90"><Trash2 size={24}/></button></td>
+                   </tr>
+                ))}
+                {items.length === 0 && (
+                   <tr><td colspan="4" className="p-24 text-center text-slate-300 font-bold">الكتالوج فارغ، ابدأ بإضافة منتجاتك الأولى</td></tr>
+                )}
+             </tbody>
+          </table>
+       </div>
     </div>
   );
 };
 
-const PrintReport = React.forwardRef<{ items: Item[], settings: AppSettings, shift: ArchivedShift, selectedBrands: string[] }, any>((props, ref: any) => {
-  const { items, settings, shift, selectedBrands } = props;
+const SettingsView: React.FC<{ settings: AppSettings, setSettings: any, onBackup: any, onRestore: any, addToast: any }> = ({ settings, setSettings, onBackup, onRestore, addToast }) => {
+  const [newUser, setNewUser] = useState({ name: '', user: '', pass: '', role: 'operator' as Role });
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  return (
-    <div ref={ref} className="print-only">
-      {selectedBrands.map(brd => {
-        const brdItems = items.filter(i => i.brd === brd);
-        const brdData = brdItems.map(itm => ({
-          ...itm,
-          spec: settings.specs.find(s => s.id === itm.specId),
-          vals: (shift.data[itm.id] || [0,0,0,0,0,0,0]) as number[]
-        })).filter(i => i.vals.reduce((a,b)=>a+b,0) > 0);
-
-        if (brdData.length === 0) return null;
-        const brdTotal = brdData.reduce((acc, i) => acc + i.vals.reduce((a,b)=>a+b,0), 0);
-
-        return (
-          <div key={brd} className="mb-8 p-4" style={{ pageBreakAfter: 'always' }}>
-            {/* Professional Header */}
-            <div className="report-header flex justify-between items-center mb-6">
-               <div className="text-right">
-                  <h1 className="text-3xl font-black text-slate-900 mb-1">{settings.comp}</h1>
-                  <h2 className="text-xl font-bold text-indigo-700">بيان إنتاج الأصناف اليومي</h2>
-               </div>
-               <div className="text-left border-2 border-slate-900 p-3 rounded-lg bg-slate-50">
-                  <p className="font-bold text-sm">التاريخ: {shift.date}</p>
-                  <p className="font-bold text-sm">البراند: {brd}</p>
-                  <p className="font-bold text-sm text-indigo-600">رقم السجل: #{shift.id.toString().slice(-6)}</p>
-               </div>
-            </div>
-
-            {/* Quality Info Bar */}
-            <div className="grid grid-cols-2 gap-4 mb-6">
-               <div className="border border-slate-900 p-2 flex items-center gap-2">
-                  <ShieldCheck size={18}/>
-                  <span className="font-black text-xs">مطابق للمواصفات القياسية للجودة</span>
-               </div>
-               <div className="border border-slate-900 p-2 flex items-center gap-2">
-                  <FileText size={18}/>
-                  <span className="font-black text-xs">مسؤول الشيفت: {shift.user}</span>
-               </div>
-            </div>
-
-            <table className="report-table">
-              <thead>
-                <tr>
-                  <th className="w-1/4">وصف المنتج والمواصفة</th>
-                  <th>س1</th><th>س2</th><th>س3</th><th>س4</th><th>س5</th><th>س6</th><th>Ex</th>
-                  <th>الإجمالي (كجم)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {brdData.map(i => {
-                  const sum = i.vals.reduce((a,b)=>a+b,0);
-                  return (
-                    <tr key={i.id}>
-                      <td className="text-right">
-                        <div>{i.name}</div>
-                        {i.spec && <div className="text-[10px] text-indigo-600">مواصفة: {i.spec.num} ({i.spec.name})</div>}
-                      </td>
-                      {i.vals.map((v, idx) => <td key={idx}>{v || '-'}</td>)}
-                      <td className="text-center font-black bg-slate-50">{sum.toLocaleString()}</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-              <tfoot>
-                <tr>
-                  <td colSpan={8} className="text-left p-3 font-black text-lg">إجمالي إنتاج البراند</td>
-                  <td className="text-center p-3 font-black text-lg bg-indigo-600 text-white">{brdTotal.toLocaleString()} كجم</td>
-                </tr>
-              </tfoot>
-            </table>
-
-            {/* Footer Signatures */}
-            <div className="mt-12 grid grid-cols-3 gap-12 text-center font-black">
-              {settings.sigs.split('\n').map(sig => (
-                <div key={sig} className="space-y-12">
-                  <p className="text-sm">{sig}</p>
-                  <div className="border-t-2 border-slate-900 w-3/4 mx-auto"></div>
-                </div>
-              ))}
-            </div>
-
-            <div className="mt-20 pt-4 border-t border-slate-300 flex justify-between items-center text-[9px] text-slate-400 font-bold uppercase">
-               <span>Generated via Mini Bo Pro System - Integrated Factory Solution</span>
-               <span>Time: {new Date().toLocaleTimeString('ar-EG')}</span>
-            </div>
-          </div>
-        );
-      })}
-    </div>
-  );
-});
-
-const Archive: React.FC<{ archive: ArchivedShift[], items: Item[], settings: AppSettings }> = ({ archive, items, settings }) => {
-  const [isModalOpen, setIsModalOpen] = useState(false);
-  const [selectedShift, setSelectedShift] = useState<ArchivedShift | null>(null);
-  const [selectedBrands, setSelectedBrands] = useState<string[]>([]);
-  const printRef = useRef<HTMLDivElement>(null);
-
-  const handleOpenPrintModal = (shift: ArchivedShift) => {
-    setSelectedShift(shift);
-    const brandsWithData = settings.brds.filter(brd => items.filter(i => i.brd === brd).some(itm => (shift.data[itm.id] || []).reduce((a, b) => a + b, 0) > 0));
-    setSelectedBrands(brandsWithData);
-    setIsModalOpen(true);
+  const handleAddUser = () => {
+    if (!newUser.name || !newUser.user || !newUser.pass) return addToast("يرجى إكمال بيانات المستخدم", "danger");
+    const u: User = { id: Date.now().toString(), name: newUser.name, username: newUser.user, password: newUser.pass, role: newUser.role };
+    setSettings({...settings, users: [...settings.users, u]});
+    setNewUser({ name: '', user: '', pass: '', role: 'operator' });
+    addToast("تمت إضافة المستخدم بنجاح", "success");
   };
 
-  const handlePrint = useReactToPrint({ contentRef: printRef, documentTitle: `تقرير_${selectedShift?.date}` });
-
   return (
-    <>
-      <div className="bg-white rounded-3xl shadow-sm border border-slate-100 overflow-hidden">
-        <table className="w-full text-right">
-          <thead>
-            <tr className="bg-slate-50 border-b border-slate-100 text-slate-500 text-[11px] font-black uppercase">
-              <th className="p-6">التاريخ</th><th className="p-6">المسؤول</th><th className="p-6">الإنتاج</th><th className="p-6 text-center">إجراء</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {archive.map(s => (
-              <tr key={s.id} className="hover:bg-slate-50">
-                <td className="p-6 font-bold">{s.date}</td>
-                <td className="p-6 font-medium">{s.user}</td>
-                <td className="p-6 font-black text-indigo-600">{s.total.toLocaleString()} كجم</td>
-                <td className="p-6 text-center">
-                  <button onClick={() => handleOpenPrintModal(s)} className="inline-flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl hover:bg-indigo-600 hover:text-white transition-all font-bold text-xs">
-                    <Printer size={14} /> طباعة احترافية
+    <div className="grid grid-cols-1 lg:grid-cols-2 gap-12 animate-in fade-in duration-700">
+       <div className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-xl shadow-slate-200/50 space-y-10">
+          <div className="flex items-center gap-5">
+             <div className="p-4 bg-indigo-100 text-indigo-700 rounded-2xl shadow-sm"><UserIcon size={24}/></div>
+             <h3 className="text-2xl font-black text-slate-900 tracking-tight">إدارة فريق العمل</h3>
+          </div>
+          <div className="space-y-6 bg-slate-50 p-10 rounded-[2.5rem] shadow-inner">
+             <div className="space-y-4">
+                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pr-4">Full Employee Name</label>
+                <input type="text" className="w-full px-8 py-5 rounded-[1.5rem] bg-white border-none font-bold outline-none shadow-sm text-lg" placeholder="الاسم الكامل" value={newUser.name} onChange={e => setNewUser({...newUser, name: e.target.value})} />
+             </div>
+             <div className="grid grid-cols-2 gap-6">
+                <div className="space-y-4">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pr-4">Login ID</label>
+                  <input type="text" className="w-full px-6 py-5 rounded-[1.5rem] bg-white border-none font-bold outline-none shadow-sm text-lg" placeholder="اسم المستخدم" value={newUser.user} onChange={e => setNewUser({...newUser, user: e.target.value})} />
+                </div>
+                <div className="space-y-4">
+                  <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pr-4">Access Key</label>
+                  <input type="password" className="w-full px-6 py-5 rounded-[1.5rem] bg-white border-none font-bold outline-none shadow-sm text-lg" placeholder="كلمة المرور" value={newUser.pass} onChange={e => setNewUser({...newUser, pass: e.target.value})} />
+                </div>
+             </div>
+             <div className="space-y-4">
+               <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pr-4">System Role</label>
+               <select className="w-full px-8 py-5 rounded-[1.5rem] bg-white border-none font-bold outline-none shadow-sm text-lg" value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value as Role})}>
+                  <option value="operator">عامل إنتاج (إدخال)</option>
+                  <option value="supervisor">مشرف وردية (اعتماد)</option>
+                  <option value="admin">مدير نظام (كامل)</option>
+               </select>
+             </div>
+             <button onClick={handleAddUser} className="w-full py-6 bg-indigo-600 text-white rounded-[1.5rem] font-black shadow-2xl shadow-indigo-100 flex items-center justify-center gap-3 text-lg hover:bg-indigo-700 transition-all">
+               <Plus size={24}/> تسجيل الموظف
+             </button>
+          </div>
+          <div className="space-y-4 max-h-[400px] overflow-y-auto custom-scrollbar pr-4">
+             {settings.users.map(u => (
+               <div key={u.id} className="p-6 bg-white rounded-3xl flex justify-between items-center border border-slate-100 group shadow-sm hover:shadow-md transition-all">
+                  <div className="flex items-center gap-5">
+                    <div className="w-14 h-14 rounded-2xl bg-slate-900 flex items-center justify-center text-white font-black text-xl shadow-lg">{u.name[0]}</div>
+                    <div>
+                      <p className="font-black text-slate-900 text-lg">{u.name}</p>
+                      <span className="text-[10px] font-black text-indigo-600 uppercase bg-indigo-50 px-3 py-1 rounded-full tracking-widest">{u.role}</span>
+                    </div>
+                  </div>
+                  <button onClick={() => {
+                    if(u.username === 'admin') return addToast("لا يمكن حذف حساب المدير الرئيسي", "danger");
+                    setSettings({...settings, users: settings.users.filter(x => x.id !== u.id)});
+                  }} className="p-4 text-rose-400 opacity-0 group-hover:opacity-100 hover:bg-rose-50 rounded-2xl transition-all">
+                     <Trash2 size={24}/>
                   </button>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+               </div>
+             ))}
+          </div>
+       </div>
 
-      {isModalOpen && selectedShift && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
-          <div className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm" onClick={() => setIsModalOpen(false)}></div>
-          <div className="bg-white rounded-3xl w-full max-w-lg shadow-2xl relative p-8 animate-bounce-in">
-            <h3 className="text-xl font-extrabold mb-4">تخصيص طباعة التقرير</h3>
-            <div className="space-y-3 max-h-60 overflow-y-auto mb-6 pr-2 custom-scrollbar">
-              {settings.brds.map(brd => (
-                <button 
-                  key={brd} 
-                  onClick={() => setSelectedBrands(prev => prev.includes(brd) ? prev.filter(b => b !== brd) : [...prev, brd])}
-                  className={`w-full flex justify-between p-4 rounded-xl border-2 transition-all ${selectedBrands.includes(brd) ? 'border-indigo-600 bg-indigo-50' : 'border-slate-100 bg-white'}`}
-                >
-                  <span className="font-bold">{brd}</span>
-                  {selectedBrands.includes(brd) && <Check size={20} className="text-indigo-600" />}
+       <div className="space-y-12">
+          <div className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-xl shadow-slate-200/50 space-y-10 relative overflow-hidden">
+             <div className="absolute top-0 right-0 p-10 opacity-[0.03] text-emerald-900 pointer-events-none"><HardDrive size={120} /></div>
+             <div className="flex items-center gap-5">
+                <div className="p-4 bg-emerald-100 text-emerald-700 rounded-2xl shadow-sm"><Database size={24}/></div>
+                <h3 className="text-2xl font-black text-slate-900 tracking-tight">نظام النسخ الاحتياطي</h3>
+             </div>
+             <div className="grid grid-cols-2 gap-8">
+                <button onClick={onBackup} className="flex flex-col items-center justify-center p-12 bg-slate-900 text-white rounded-[2.5rem] hover:bg-indigo-600 transition-all group shadow-2xl active:scale-95">
+                   <Download size={40} className="mb-4 group-hover:-translate-y-2 transition-transform" />
+                   <span className="font-black text-lg">تحميل النسخة</span>
                 </button>
-              ))}
-            </div>
-            <div className="flex gap-4">
-              <button onClick={() => setIsModalOpen(false)} className="flex-1 py-4 bg-slate-100 rounded-2xl font-bold">إلغاء</button>
-              <button onClick={() => { handlePrint(); setIsModalOpen(false); }} className="flex-[2] py-4 bg-indigo-600 text-white rounded-2xl font-bold shadow-lg">بدء الطباعة</button>
-            </div>
+                <button onClick={() => fileInputRef.current?.click()} className="flex flex-col items-center justify-center p-12 bg-indigo-50 text-indigo-700 rounded-[2.5rem] border-2 border-indigo-100 hover:bg-indigo-600 hover:text-white transition-all group active:scale-95">
+                   <UploadCloud size={40} className="mb-4 group-hover:-translate-y-2 transition-transform" />
+                   <span className="font-black text-lg">استعادة البيانات</span>
+                </button>
+                <input type="file" ref={fileInputRef} className="hidden" accept=".json" onChange={onRestore} />
+             </div>
+             <div className="p-8 bg-indigo-50/50 rounded-3xl border border-indigo-100/50 flex gap-5 items-start">
+                <Info size={32} className="text-indigo-600 shrink-0 mt-1" />
+                <p className="text-sm font-bold text-indigo-900/70 leading-relaxed">
+                   <b>توصية تقنية:</b> يرجى تصدير نسخة احتياطية بشكل أسبوعي. يتم حفظ الملف بصيغة JSON ويحتوي على الأرشيف والكتالوج وإعدادات المستخدمين بالكامل.
+                </p>
+             </div>
           </div>
-        </div>
-      )}
 
-      <div className="hidden">
-        {selectedShift && <PrintReport ref={printRef} items={items} settings={settings} shift={selectedShift} selectedBrands={selectedBrands} />}
-      </div>
-    </>
-  );
-};
-
-const SettingsView: React.FC<{ settings: AppSettings, setSettings: React.Dispatch<React.SetStateAction<AppSettings>>, user: User, addToast: (m: string, t: 'success' | 'danger') => void }> = ({ settings, setSettings, user, addToast }) => {
-  const [newBrd, setNewBrd] = useState('');
-  const [newSpec, setNewSpec] = useState({ num: '', name: '' });
-
-  const addBrd = () => { if (newBrd) { setSettings({...settings, brds: [...settings.brds, newBrd]}); setNewBrd(''); } };
-  const addSpec = () => { if (newSpec.num && newSpec.name) { setSettings({...settings, specs: [...settings.specs, { id: Date.now(), ...newSpec }]}); setNewSpec({ num: '', name: '' }); } };
-
-  return (
-    <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-      <div className="space-y-8">
-        <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 space-y-6">
-          <h3 className="text-lg font-extrabold">المواصفات القياسية للجودة</h3>
-          <div className="flex gap-2">
-            <input type="text" placeholder="رقم المواصفة" className="flex-1 px-4 py-3 rounded-xl border-2 border-slate-100 font-bold" value={newSpec.num} onChange={e => setNewSpec({...newSpec, num: e.target.value})}/>
-            <input type="text" placeholder="اسم المواصفة" className="flex-1 px-4 py-3 rounded-xl border-2 border-slate-100 font-bold" value={newSpec.name} onChange={e => setNewSpec({...newSpec, name: e.target.value})}/>
-            <button onClick={addSpec} className="w-14 h-14 bg-emerald-500 text-white rounded-xl flex items-center justify-center hover:bg-emerald-600"><Plus size={24} /></button>
+          <div className="bg-white p-12 rounded-[3.5rem] border border-slate-100 shadow-xl shadow-slate-200/50 space-y-10">
+             <div className="flex items-center gap-5">
+                <div className="p-4 bg-slate-900 text-white rounded-2xl shadow-sm"><Settings size={24}/></div>
+                <h3 className="text-2xl font-black text-slate-900 tracking-tight">إعدادات التوثيق والبراند</h3>
+             </div>
+             <div className="space-y-6">
+               <div className="space-y-4">
+                 <label className="text-[10px] font-black text-slate-400 uppercase pr-4 tracking-widest">Global Entity Name</label>
+                 <input type="text" className="w-full px-8 py-5 rounded-[1.5rem] bg-slate-50 border-none font-bold shadow-inner text-lg" value={settings.comp} onChange={e => setSettings({...settings, comp: e.target.value})} placeholder="اسم المصنع أو المنشأة"/>
+               </div>
+               <div className="space-y-4">
+                 <label className="text-[10px] font-black text-slate-400 uppercase pr-4 tracking-widest">Report Approval Chain</label>
+                 <textarea className="w-full h-40 px-8 py-6 rounded-[1.5rem] bg-slate-50 border-none font-bold resize-none shadow-inner text-lg" value={settings.sigs} onChange={e => setSettings({...settings, sigs: e.target.value})} placeholder="المسميات الوظيفية للتوقيع (كل سطر توقيع منفصل)"/>
+               </div>
+               <button onClick={() => addToast("تم تحديث البيانات المرجعية للمصنع", "success")} className="w-full py-6 bg-slate-900 text-white rounded-[1.5rem] font-black shadow-2xl hover:bg-slate-800 transition-all active:scale-95">حفظ التغييرات</button>
+             </div>
           </div>
-          <div className="space-y-2 max-h-40 overflow-y-auto custom-scrollbar">
-            {settings.specs.map(s => (
-              <div key={s.id} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl">
-                <div><span className="font-black text-indigo-600">{s.num}</span> - <span className="font-bold text-slate-700">{s.name}</span></div>
-                <button onClick={() => setSettings({...settings, specs: settings.specs.filter(x => x.id !== s.id)})} className="text-rose-400 hover:text-rose-600"><Trash2 size={16}/></button>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 space-y-6">
-          <h3 className="text-lg font-extrabold">إدارة البراندات</h3>
-          <div className="flex gap-2">
-            <input type="text" className="flex-1 px-4 py-3 rounded-xl border-2 border-slate-100 font-bold" placeholder="براند جديد..." value={newBrd} onChange={e => setNewBrd(e.target.value)}/>
-            <button onClick={addBrd} className="w-14 h-14 bg-emerald-500 text-white rounded-xl flex items-center justify-center hover:bg-emerald-600"><Plus size={24} /></button>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {settings.brds.map(b => (
-              <div key={b} className="flex items-center gap-2 px-4 py-2 bg-indigo-50 text-indigo-600 rounded-xl font-bold">
-                {b} <button onClick={() => setSettings({...settings, brds: settings.brds.filter(x => x !== b)})}><Trash2 size={14}/></button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      <div className="bg-white p-8 rounded-3xl shadow-sm border border-slate-100 space-y-6">
-        <h3 className="text-lg font-extrabold">بيانات التقارير</h3>
-        <div>
-          <label className="block text-[10px] font-black text-slate-400 uppercase mb-2">اسم المؤسسة</label>
-          <input type="text" className="w-full px-4 py-3 rounded-xl border-2 border-slate-100 font-bold" value={settings.comp} onChange={e => setSettings({...settings, comp: e.target.value})}/>
-        </div>
-        <div>
-          <label className="block text-[10px] font-black text-slate-400 uppercase mb-2">التوقيعات المعتمدة</label>
-          <textarea className="w-full h-32 px-4 py-3 rounded-xl border-2 border-slate-100 font-bold resize-none" value={settings.sigs} onChange={e => setSettings({...settings, sigs: e.target.value})}/>
-        </div>
-        <button onClick={() => addToast("تم حفظ التعديلات", "success")} className="w-full py-4 bg-indigo-600 text-white rounded-xl font-bold shadow-lg">حفظ البيانات</button>
-      </div>
+       </div>
     </div>
   );
 };

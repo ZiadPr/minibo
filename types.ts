@@ -1,8 +1,12 @@
 
-export type Role = 'admin' | 'super' | 'view';
+export type Role = 'admin' | 'supervisor' | 'operator' | 'view';
+export type ShiftType = 'morning' | 'evening' | 'night';
 
 export interface User {
+  id: string;
   name: string;
+  username: string;
+  password?: string;
   role: Role;
 }
 
@@ -17,18 +21,25 @@ export interface Item {
   name: string;
   brd: string;
   w: number;
-  specId?: number; // Optional link to specification
+  specId?: number; 
+}
+
+export interface ItemProduction {
+  hours: number[];
+  specNote: string;
 }
 
 export interface ShiftData {
-  [itemId: number]: number[];
+  [itemId: number]: ItemProduction;
 }
 
 export interface ArchivedShift {
   id: number;
   date: string;
   ts: number;
-  user: string;
+  createdBy: string;
+  supervisor: string;
+  shiftType: ShiftType;
   data: ShiftData;
   total: number;
   count: number;
@@ -38,7 +49,7 @@ export interface AppSettings {
   comp: string;
   brds: string[];
   sigs: string;
-  specs: Specification[]; // Store managed specifications
+  users: User[];
 }
 
 export type TabId = 'dash' | 'prod' | 'items' | 'arch' | 'sets';
