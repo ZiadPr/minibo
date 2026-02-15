@@ -5,12 +5,12 @@ import {
   Download, Info, Check, User as UserIcon, Lock, Search, ShieldCheck, 
   Database, FileSpreadsheet, Calendar, UserCheck, Zap, Clock, ShieldAlert,
   UploadCloud, ChevronRight, Activity, TrendingUp, Layers, HardDrive
-} from 'https://esm.sh/lucide-react@0.460.0';
+} from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   PieChart, Pie, Cell, Legend, AreaChart, Area
-} from 'https://esm.sh/recharts@2.12.7?deps=react@18.3.1';
-import * as XLSX from 'https://esm.sh/xlsx@0.18.5';
+} from 'recharts';
+import * as XLSX from 'xlsx';
 import { User, Role, Item, ShiftData, ArchivedShift, AppSettings, TabId, ItemProduction, ShiftType } from './types';
 
 // --- IndexedDB Manager ---
@@ -162,9 +162,10 @@ const App: React.FC = () => {
 
   const handleArchive = () => {
     let total = 0;
+    // Fix: Explicitly type 'v' as 'ItemProduction' to resolve 'unknown' property access errors.
     Object.values(liveShift).forEach((v: ItemProduction) => {
       if (v && v.hours) {
-        total += v.hours.reduce((a, b) => a + (b || 0), 0);
+        total += v.hours.reduce((a, b) => a + b, 0);
       }
     });
     
