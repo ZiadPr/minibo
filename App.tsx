@@ -5,12 +5,12 @@ import {
   Download, Info, Check, User as UserIcon, Lock, Search, ShieldCheck, 
   Database, FileSpreadsheet, Calendar, UserCheck, Zap, Clock, ShieldAlert,
   UploadCloud, ChevronRight, Activity, TrendingUp, Layers, HardDrive
-} from 'https://esm.sh/lucide-react@0.460.0';
+} from 'lucide-react';
 import { 
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, 
   PieChart, Pie, Cell, Legend, AreaChart, Area
-} from 'https://esm.sh/recharts@2.12.7?deps=react@18.3.1';
-import * as XLSX from 'https://esm.sh/xlsx@0.18.5';
+} from 'recharts';
+import * as XLSX from 'xlsx';
 import { User, Role, Item, ShiftData, ArchivedShift, AppSettings, TabId, ItemProduction, ShiftType } from './types';
 
 // --- IndexedDB Manager ---
@@ -786,7 +786,7 @@ const SettingsView: React.FC<{ settings: AppSettings, setSettings: any, onBackup
              </div>
              <div className="space-y-4">
                <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest pr-4">System Role</label>
-               <select className="w-full px-8 py-5 rounded-[1.5rem] bg-white border-none font-bold outline-none shadow-sm text-lg" value={newUser.role} onChange={e => setNewUser({...newUser, role: e.target.value as Role})}>
+               <select className="w-full px-8 py-5 rounded-[1.5rem] bg-white border-none font-bold outline-none shadow-sm text-lg" value={newUser.role} onChange={e => setNewUser({...newUser, role: newUser.role})}>
                   <option value="operator">عامل إنتاج (إدخال)</option>
                   <option value="supervisor">مشرف وردية (اعتماد)</option>
                   <option value="admin">مدير نظام (كامل)</option>
