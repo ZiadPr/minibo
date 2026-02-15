@@ -1,12 +1,8 @@
 
-export type Role = 'admin' | 'supervisor' | 'operator' | 'view';
-export type ShiftType = 'morning' | 'evening' | 'night';
+export type Role = 'admin' | 'super' | 'view';
 
 export interface User {
-  id: string;
   name: string;
-  username: string;
-  password?: string;
   role: Role;
 }
 
@@ -37,9 +33,7 @@ export interface ArchivedShift {
   id: number;
   date: string;
   ts: number;
-  createdBy: string;
-  supervisor: string;
-  shiftType: ShiftType;
+  user: string;
   data: ShiftData;
   total: number;
   count: number;
@@ -49,7 +43,7 @@ export interface AppSettings {
   comp: string;
   brds: string[];
   sigs: string;
-  users: User[];
+  specs: Specification[]; 
 }
 
 export type TabId = 'dash' | 'prod' | 'items' | 'arch' | 'sets';

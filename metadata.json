@@ -1,6 +1,5 @@
-
 {
   "name": "Mini Bo Pro",
-  "description": "An advanced industrial production management system with IndexedDB persistence and professional reporting.",
+  "description": "An advanced production management system for tracking daily outputs, managing item catalogs, and archiving historical shifts with printing capabilities.",
   "requestFramePermissions": []
 }
